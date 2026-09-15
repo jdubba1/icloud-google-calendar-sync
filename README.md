@@ -49,7 +49,7 @@ too, after a UID lookup confirms the mirror is really gone. Set
 `"propagateDeletes": false` on a pair if you'd rather a deleted mirror came
 back instead.
 
-## Setup (10 minutes)
+## Setup
 
 1. **Google.** In [console.cloud.google.com](https://console.cloud.google.com)
    create a project, enable the **Google Calendar API** and the **CalDAV API**,
