@@ -1,9 +1,9 @@
 # icloud-google-calendar-sync
 
-Two-way mirror between iCloud and Google Calendar. Stateless, zero
-dependencies, about 750 lines of TypeScript. Runs as a CLI from any cron, or as
-a single HTTP handler you can drop into Next.js, a Cloudflare Worker, Bun, or
-Deno.
+Two-way mirror between iCloud and Google Calendar. Keep a user-invisible
+calendar for agents, mirrored to your preferred human calendar. Stateless,
+zero dependencies. Runs as a CLI from any cron, or as a single HTTP handler
+you can drop into any framework.
 
 ## Why
 
@@ -25,7 +25,7 @@ copy of the original's VCALENDAR with three changes:
 - two markers are added inside the event: `X-SYNC-SOURCE:<side>:<uid>` and
   `X-SYNC-FP:<fingerprint of the original when copied>`
 
-That is the whole state. No database, no mapping table, nothing to migrate.
+That's it. No database, no mapping table, nothing to migrate.
 Each run lists both calendars over CalDAV for a time window and decides, per
 original:
 
@@ -99,7 +99,7 @@ is `Authorization: Bearer <secret>` or `x-api-key: <secret>`. Point
 [cron-job.org](https://cron-job.org) (free) or anything else at it.
 
 GitHub Actions schedules are not a good cron for this: on low-traffic repos
-they fire hours late. Vercel Hobby crons only run daily.
+they fire hours late.
 
 ## Pairs
 
@@ -116,7 +116,7 @@ A pair is two calendars mirrored into each other. Typical setup:
 `icloud:<url>` is a CalDAV collection URL from `discover icloud`. Shared iCloud
 calendars work as long as you have write access.
 
-## Things learned the hard way
+## Notes
 
 - **Never mirror attendees.** An event on a shared iCloud calendar with the
   owner as an invitee becomes an invitation to yourself, and every device will
@@ -124,8 +124,6 @@ calendars work as long as you have write access.
 - **Google pads stored events** with `DESCRIPTION:`, `LOCATION:`,
   `STATUS:CONFIRMED`, `TRANSP:OPAQUE`. If your change detection is naive, every
   Google-side mirror looks edited on the next run and ping-pongs.
-- **iCloud CalDAV logs in with the Apple ID's primary email.** If you change
-  your primary, the old address stops working.
 - **Google CalDAV needs the CalDAV API enabled** separately from the Calendar
   API, in the same Cloud project.
 
