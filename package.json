@@ -1,14 +1,28 @@
 {
   "name": "icloud-google-calendar-sync",
   "version": "0.1.0",
-  "description": "Two-way iCloud ↔ Google Calendar mirror. Stateless, zero dependencies, runs as a CLI or a single HTTP handler.",
+  "description": "Two-way iCloud \u2194 Google Calendar mirror. Stateless, zero dependencies, runs as a CLI or a single HTTP handler.",
+  "keywords": [
+    "icloud",
+    "google-calendar",
+    "caldav",
+    "calendar",
+    "sync",
+    "mirror",
+    "two-way",
+    "agents",
+    "ical"
+  ],
   "license": "MIT",
   "author": "jdubba1",
   "repository": "github:jdubba1/icloud-google-calendar-sync",
+  "homepage": "https://github.com/jdubba1/icloud-google-calendar-sync#readme",
+  "bugs": "https://github.com/jdubba1/icloud-google-calendar-sync/issues",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
+  "sideEffects": false,
   "bin": {
     "icloud-google-calendar-sync": "dist/cli.js"
   },
@@ -26,6 +40,9 @@
     "LICENSE",
     "mirror.config.example.json"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
