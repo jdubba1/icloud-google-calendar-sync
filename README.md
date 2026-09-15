@@ -1,9 +1,7 @@
 # icloud-google-calendar-sync
 
-Two-way mirror between iCloud and Google Calendar. Keep a user-invisible
-calendar for agents, mirrored to your preferred human calendar. Stateless,
-zero dependencies. Runs as a CLI from any cron, or as a single HTTP handler
-you can drop into any framework.
+Two-way iCloud and Google Calendar sync for humans and agents.
+Let agents manage Google Calendar while you use Apple Calendar.
 
 ## Why
 
