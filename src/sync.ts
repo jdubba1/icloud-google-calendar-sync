@@ -57,9 +57,10 @@ export function parse(ev: CalDavEvent): Parsed | null {
     : null;
 }
 
-/** `etag: null` on a put means create. */
+/** `etag: null` on a put means create. `stamp: true` marks a write that only adds
+ *  X-SYNC-MIRRORED to an original; nothing else in the run depends on it. */
 export type Action =
-  | { kind: "put"; on: string; href: string; etag: string | null; ics: string; why: string }
+  | { kind: "put"; on: string; href: string; etag: string | null; ics: string; why: string; stamp?: true }
   | {
       kind: "delete-if-orphan";
       on: string;
@@ -79,6 +80,8 @@ export type Action =
       why: string;
     };
 
+type Put = Extract<Action, { kind: "put" }>;
+
 /** Pure: originals on `from`, mirrors on `to`. */
 export function planDirection(
   from: Side,
@@ -90,7 +93,7 @@ export function planDirection(
   const propagate = opts.propagateDeletes ?? true;
   const originals = new Map(fromEvents.filter((e) => !e.source).map((e) => [e.uid, e]));
   const mirrors = new Map(toEvents.filter((e) => e.source?.side === from.id).map((e) => [e.source!.uid, e]));
-  const put = (on: string, ev: { href: string; etag: string | null }, ics: string[], why: string): Action => ({
+  const put = (on: string, ev: { href: string; etag: string | null }, ics: string[], why: string): Put => ({
     kind: "put",
     on,
     href: ev.href,
@@ -135,7 +138,10 @@ export function planDirection(
       mirror.fp !== mirror.fpAtCopy &&
       (orig.fp === mirror.fpAtCopy || mirror.modified > orig.modified);
     if (propagate && !stamped && !mirrorEdited) {
-      actions.push(put(from.id, orig, withMirrored(orig.lines, to.id), `stamp ${uid} as mirrored on ${to.id}`));
+      actions.push({
+        ...put(from.id, orig, withMirrored(orig.lines, to.id), `stamp ${uid} as mirrored on ${to.id}`),
+        stamp: true,
+      });
     }
     if (!mirror) {
       continue;
@@ -202,6 +208,8 @@ export type PairResult = {
   deleted: number;
   skipped: number;
   errors: string[];
+  /** Stamp writes that failed. The original keeps syncing; deletes of its mirror will not propagate. */
+  warnings?: string[];
   actions?: Action[];
 };
 
@@ -224,6 +232,7 @@ export async function syncPair(pair: Pair, win: Window, opts: { dryRun?: boolean
     deleted: 0,
     skipped: 0,
     errors: [],
+    warnings: [],
   };
   if (opts.dryRun) return { ...result, actions };
 
@@ -241,7 +250,15 @@ export async function syncPair(pair: Pair, win: Window, opts: { dryRun?: boolean
         else (await deleteEvent(side.auth, act.href, act.etag), result.deleted++);
       }
     } catch (e) {
-      result.errors.push(`${act.kind} ${act.href}: ${e instanceof Error ? e.message : String(e)}`);
+      const msg = `${act.kind} ${act.href}: ${e instanceof Error ? e.message : String(e)}`;
+      if (act.kind === "put" && act.stamp) {
+        // Some originals cannot be written at all (Google events generated from
+        // Gmail, invitations you don't organize). Their mirrors still sync; only
+        // delete propagation for that event is lost. Don't let one block the pair.
+        result.warnings!.push(msg);
+        continue;
+      }
+      result.errors.push(msg);
       // Later actions may depend on this write (creation -> stamp, edit -> re-stamp).
       // Retry from fresh server state on the next run instead of recording a false success.
       result.skipped += actions.length - index - 1;

@@ -111,6 +111,11 @@ takes precedence.
 
 A failed sync action stops that pair for the current run. Remaining actions
 are reported as skipped and retried from fresh calendar state on the next run.
+The exception is the `X-SYNC-MIRRORED` stamp: some originals cannot be written
+at all (events Google generates from Gmail, invitations you don't organize).
+A failed stamp is reported under `warnings`, the run is still `ok`, and the
+pair carries on. That event still mirrors both ways; deleting its mirror just
+brings the mirror back instead of deleting the original.
 
 ## Pairs
 

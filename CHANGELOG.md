@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2 (2026-09-15)
+
+- A failed `X-SYNC-MIRRORED` stamp no longer stops the pair. Originals that
+  reject writes (Google events generated from Gmail, invitations you don't
+  organize) are reported under `warnings` and keep mirroring; only delete
+  propagation for that event is lost. Previously one such event failed every
+  run at the first action, so nothing synced and the handler returned 502.
+
 ## 0.2.1 (2026-09-15)
 
 - Stop a pair after failed writes so originals are not stamped after failed mirror creation.

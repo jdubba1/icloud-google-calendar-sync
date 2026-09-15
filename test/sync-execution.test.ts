@@ -72,6 +72,50 @@ describe("sync execution", () => {
     },
   );
 
+  it("keeps syncing the pair when an original cannot be stamped", async () => {
+    // A Google event generated from Gmail (or any invitation you don't organize)
+    // rejects writes. Its mirror is already current; only the stamp fails.
+    const readOnly = original(pair.a.url + "readonly.ics");
+    events.set(readOnly.href, readOnly);
+    const mirrorHref = pair.b.url + mirrorUid(pair.a.id, "example") + ".ics";
+    events.set(mirrorHref, {
+      href: mirrorHref,
+      etag: '"1"',
+      ics: fold(
+        toMirror(unfold(readOnly.ics), {
+          uid: mirrorUid(pair.a.id, "example"),
+          sourceSide: pair.a.id,
+          sourceUid: "example",
+          fp: parse(readOnly)!.fp,
+        }),
+      ),
+    });
+    const fresh = original(pair.a.url + "fresh.ics");
+    fresh.ics = fresh.ics.replace("UID:example", "UID:fresh");
+    events.set(fresh.href, fresh);
+    const write = dav.putEvent.getMockImplementation()!;
+    dav.putEvent.mockImplementation(async (auth, href: string, ics: string, etag: string | null) => {
+      if (href === readOnly.href) throw new Error("PUT → 403: forbidden");
+      return write(auth, href, ics, etag);
+    });
+
+    const result = await syncPair(pair, win);
+    expect(result.errors).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings![0]).toContain("403");
+    expect(result.skipped).toBe(0);
+    expect(result.created).toBe(1);
+    expect(events.get(readOnly.href)!.ics).toBe(readOnly.ics);
+    expect(events.get(fresh.href)!.ics).toContain("X-SYNC-MIRRORED:icloud");
+    expect(events.has(pair.b.url + mirrorUid(pair.a.id, "fresh") + ".ics")).toBe(true);
+
+    // Stateless: the stamp is retried and warns again, and nothing else changes.
+    const again = await syncPair(pair, win);
+    expect(again.errors).toEqual([]);
+    expect(again.warnings).toHaveLength(1);
+    expect(again.created + again.updated + again.deleted).toBe(0);
+  });
+
   it("propagates a real mirror deletion after successful creation and stamping", async () => {
     const src = original(pair.a.url + "example.ics");
     events.set(src.href, src);

@@ -127,6 +127,7 @@ async function sync(config: Config): Promise<void> {
       `${r.pair}: a=${r.a} b=${r.b} created=${r.created} updated=${r.updated} deleted=${r.deleted} skipped=${r.skipped}${dryRun ? " (dry)" : ""}`,
     );
     for (const a of r.actions ?? []) console.log(`  ${a.kind} → ${a.on}: ${a.why}`);
+    for (const w of r.warnings ?? []) console.log(`  WARN ${w}`);
     for (const e of r.errors) console.log(`  ERROR ${e}`);
   }
   if (failed) process.exitCode = 1;

@@ -1,6 +1,6 @@
 {
   "name": "icloud-google-calendar-sync",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Two-way iCloud \u2194 Google Calendar mirror. Stateless, zero dependencies, runs as a CLI or a single HTTP handler.",
   "keywords": [
     "icloud",
