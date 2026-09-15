@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// icloud-google-calendar-sync — the command line.
+// icloud-google-calendar-sync: the command line.
 //
 //   auth google        mint a Google refresh token with your own Desktop OAuth client
 //   discover icloud    list iCloud calendar collection URLs (for the config file)
