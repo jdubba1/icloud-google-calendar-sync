@@ -1,7 +1,7 @@
 # icloud-google-calendar-sync
 
 Two-way mirror between iCloud and Google Calendar. Stateless, zero
-dependencies, about 900 lines of TypeScript. Runs as a CLI from any cron, or as
+dependencies, about 750 lines of TypeScript. Runs as a CLI from any cron, or as
 a single HTTP handler you can drop into Next.js, a Cloudflare Worker, Bun, or
 Deno.
 
