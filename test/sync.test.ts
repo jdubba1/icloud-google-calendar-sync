@@ -53,10 +53,11 @@ describe("planDirection", () => {
     const flight = ev("https://g/events/f.ics", ics("f", "Flight", "20260901T000000Z", ["ATTENDEE:mailto:x@y.z"]));
     const actions = planDirection(google, icloud, [flight], []);
     expect(actions).toHaveLength(1);
-    expect(actions[0].kind).toBe("create");
+    expect(actions[0].kind).toBe("put");
+    if (actions[0].kind === "put") expect(actions[0].etag).toBeNull();
     expect(actions[0].on).toBe("icloud");
     expect(actions[0].href).toBe("https://i/cal/f-mirror-google.ics");
-    if (actions[0].kind === "create") {
+    if (actions[0].kind === "put") {
       expect(actions[0].ics).not.toContain("ATTENDEE");
       expect(actions[0].ics).toContain("X-SYNC-SOURCE:google:f");
     }
@@ -74,8 +75,8 @@ describe("planDirection", () => {
       modified: "20260909T000000Z",
     });
     const actions = planDirection(google, icloud, [src], [stale]);
-    expect(actions.map((a) => [a.kind, a.on])).toEqual([["update", "icloud"]]);
-    if (actions[0].kind === "update") expect(unfold(actions[0].ics)).toContain("X-SYNC-FP:" + src.fp);
+    expect(actions.map((a) => [a.kind, a.on])).toEqual([["put", "icloud"]]);
+    if (actions[0].kind === "put") expect(unfold(actions[0].ics)).toContain("X-SYNC-FP:" + src.fp);
   });
 
   it("only re-stamps when the content already matches but the stamp is stale", () => {
@@ -85,8 +86,8 @@ describe("planDirection", () => {
       modified: "20260909T000000Z",
     });
     const actions = planDirection(google, icloud, [src], [stale]);
-    expect(actions.map((a) => [a.kind, a.on])).toEqual([["update", "icloud"]]);
-    if (actions[0].kind === "update") expect(unfold(actions[0].ics)).toContain("X-SYNC-FP:" + src.fp);
+    expect(actions.map((a) => [a.kind, a.on])).toEqual([["put", "icloud"]]);
+    if (actions[0].kind === "put") expect(unfold(actions[0].ics)).toContain("X-SYNC-FP:" + src.fp);
   });
 
   it("refreshes the mirror when the original changed", () => {
@@ -94,8 +95,8 @@ describe("planDirection", () => {
     const mirror = mirrorOf(old, google);
     const changed = ev("https://g/events/f.ics", ics("f", "Flight (delayed)", "20260902T000000Z"));
     const actions = planDirection(google, icloud, [changed], [mirror]);
-    expect(actions.map((a) => [a.kind, a.on])).toEqual([["update", "icloud"]]);
-    if (actions[0].kind === "update") expect(actions[0].ics).toContain("SUMMARY:Flight (delayed)");
+    expect(actions.map((a) => [a.kind, a.on])).toEqual([["put", "icloud"]]);
+    if (actions[0].kind === "put") expect(actions[0].ics).toContain("SUMMARY:Flight (delayed)");
   });
 
   it("pushes a human edit on the mirror back to the original and re-stamps", () => {
@@ -106,16 +107,16 @@ describe("planDirection", () => {
     });
     const actions = planDirection(google, icloud, [src], [edited]);
     expect(actions.map((a) => [a.kind, a.on])).toEqual([
-      ["update", "google"],
-      ["update", "icloud"],
+      ["put", "google"],
+      ["put", "icloud"],
     ]);
-    if (actions[0].kind === "update") {
+    if (actions[0].kind === "put") {
       expect(actions[0].href).toBe("https://g/events/f.ics");
       expect(actions[0].ics).toContain("UID:f\r\n");
       expect(actions[0].ics).toContain("SUMMARY:Flight w/ partner");
       expect(actions[0].ics).not.toContain("X-SYNC");
     }
-    if (actions[1].kind === "update") {
+    if (actions[1].kind === "put") {
       const stamped = unfold(actions[1].ics);
       expect(stamped.find((l) => l.startsWith("X-SYNC-FP"))).toBe("X-SYNC-FP:" + fingerprint(edited.lines));
     }
@@ -129,8 +130,8 @@ describe("planDirection", () => {
     });
     const srcEditedLater = ev("https://g/events/f.ics", ics("f", "source edit", "20260905T000000Z"));
     const actions = planDirection(google, icloud, [srcEditedLater], [mirrorEditedEarly]);
-    expect(actions.map((a) => [a.kind, a.on])).toEqual([["update", "icloud"]]);
-    if (actions[0].kind === "update") expect(actions[0].ics).toContain("SUMMARY:source edit");
+    expect(actions.map((a) => [a.kind, a.on])).toEqual([["put", "icloud"]]);
+    if (actions[0].kind === "put") expect(actions[0].ics).toContain("SUMMARY:source edit");
   });
 
   it("flags a mirror whose original is missing for orphan check, never blind delete", () => {

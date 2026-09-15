@@ -22,13 +22,13 @@ import { googleAccessToken, type GoogleOAuthEnv } from "./google.js";
 import type { Pair, Side } from "./sync.js";
 
 export type PairSpec = { name: string; a: string; b: string };
-export type Window = { pastDays: number; futureDays: number };
+export type WindowDays = { pastDays: number; futureDays: number };
 
 export type Config = {
   google: GoogleOAuthEnv | null;
   icloud: { username: string; appPassword: string } | null;
   pairs: PairSpec[];
-  window: Window;
+  window: WindowDays;
 };
 
 type Env = Record<string, string | undefined>;
