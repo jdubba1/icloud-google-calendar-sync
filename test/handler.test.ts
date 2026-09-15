@@ -65,3 +65,43 @@ describe("createHandler", () => {
     expect((await get("/?pair=nope", { authorization: "Bearer shh" })).status).toBe(400);
   });
 });
+
+describe("custom authorization", () => {
+  it("accepts an asynchronous authorization hook without a secret", async () => {
+    syncPair.mockResolvedValue({ errors: [] });
+    const authorize = vi.fn(async () => true);
+    const handler = createHandler({ config, authorize });
+    const request = new Request("http://h/");
+    expect((await handler(request)).status).toBe(200);
+    expect(authorize).toHaveBeenCalledWith(request);
+    expect(syncPair).toHaveBeenCalledOnce();
+  });
+
+  it("returns a custom denial response without syncing", async () => {
+    const denied = new Response("Forbidden", { status: 403 });
+    const handler = createHandler({ config, authorize: () => denied });
+    expect(await handler(new Request("http://h/"))).toBe(denied);
+    expect(syncPair).not.toHaveBeenCalled();
+  });
+
+  it("does not let a valid secret bypass a hook denial", async () => {
+    const handler = createHandler({ config, secret: "shh", authorize: () => false });
+    expect((await handler(new Request("http://h/", { headers: { authorization: "Bearer shh" } }))).status).toBe(401);
+    expect(syncPair).not.toHaveBeenCalled();
+  });
+
+  it("does not sync if authorization throws", async () => {
+    const handler = createHandler({
+      config,
+      authorize: () => {
+        throw new Error("auth unavailable");
+      },
+    });
+    await expect(handler(new Request("http://h/"))).rejects.toThrow("auth unavailable");
+    expect(syncPair).not.toHaveBeenCalled();
+  });
+
+  it("requires an authentication method", () => {
+    expect(() => createHandler({ config })).toThrow(/secret or authorize/);
+  });
+});

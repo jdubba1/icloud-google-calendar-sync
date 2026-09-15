@@ -5,7 +5,8 @@
 // original: no mirror → create; original changed → refresh mirror; mirror
 // changed → push the edit back (both changed → later LAST-MODIFIED wins);
 // mirror whose original is gone → delete it, after a UID lookup confirms.
-// Deleting a mirror by hand does not delete the original; it comes back.
+// A missing mirror deletes its stamped original after a UID lookup, unless
+// propagateDeletes is false. Originals are stamped only after mirror creation.
 
 import type { CalDavAuth, CalDavEvent } from "./caldav.js";
 import { deleteEvent, findByUid, listEvents, putEvent } from "./caldav.js";
@@ -128,7 +129,12 @@ export function planDirection(
         ),
       );
     }
-    if (propagate && !stamped) {
+    const mirrorEdited =
+      mirror &&
+      orig.fp !== mirror.fp &&
+      mirror.fp !== mirror.fpAtCopy &&
+      (orig.fp === mirror.fpAtCopy || mirror.modified > orig.modified);
+    if (propagate && !stamped && !mirrorEdited) {
       actions.push(put(from.id, orig, withMirrored(orig.lines, to.id), `stamp ${uid} as mirrored on ${to.id}`));
     }
     if (!mirror) {
@@ -145,10 +151,15 @@ export function planDirection(
           `re-stamp ${mirror.uid} (content already equal)`,
         ),
       );
-    } else if (mirror.fp !== mirror.fpAtCopy && (orig.fp === mirror.fpAtCopy || mirror.modified > orig.modified)) {
+    } else if (mirrorEdited) {
       // A human edited the copy: push it back, then re-stamp the copy.
       actions.push(
-        put(from.id, orig, toOriginal(mirror.lines, uid, orig.mirroredOn), `mirror ${mirror.uid} edited on ${to.id}`),
+        put(
+          from.id,
+          orig,
+          toOriginal(mirror.lines, uid, [...new Set([...orig.mirroredOn, ...(propagate ? [to.id] : [])])]),
+          `mirror ${mirror.uid} edited on ${to.id}`,
+        ),
       );
       actions.push(
         put(
@@ -217,7 +228,7 @@ export async function syncPair(pair: Pair, win: Window, opts: { dryRun?: boolean
   if (opts.dryRun) return { ...result, actions };
 
   const sides = new Map([pair.a, pair.b].map((s) => [s.id, s]));
-  for (const act of actions) {
+  for (const [index, act] of actions.entries()) {
     const side = sides.get(act.on)!;
     try {
       if (act.kind === "put") {
@@ -231,6 +242,10 @@ export async function syncPair(pair: Pair, win: Window, opts: { dryRun?: boolean
       }
     } catch (e) {
       result.errors.push(`${act.kind} ${act.href}: ${e instanceof Error ? e.message : String(e)}`);
+      // Later actions may depend on this write (creation -> stamp, edit -> re-stamp).
+      // Retry from fresh server state on the next run instead of recording a false success.
+      result.skipped += actions.length - index - 1;
+      break;
     }
   }
   return result;

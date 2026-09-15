@@ -10,14 +10,24 @@
 import { pairsFor, type Config } from "./config.js";
 import { syncPair, window, type PairResult } from "./sync.js";
 
-export type HandlerOptions = { config: Config; secret: string };
+export type HandlerOptions = {
+  config: Config;
+  secret?: string;
+  authorize?: (req: Request) => boolean | Response | Promise<boolean | Response>;
+};
 
-export function createHandler({ config, secret }: HandlerOptions): (req: Request) => Promise<Response> {
-  if (!secret) throw new Error("createHandler: a secret is required");
+export function createHandler({ config, secret, authorize }: HandlerOptions): (req: Request) => Promise<Response> {
+  if (!secret && !authorize) throw new Error("createHandler: a secret or authorize hook is required");
   return async (req) => {
-    const auth = req.headers.get("authorization");
-    const key = req.headers.get("x-api-key");
-    if (auth !== `Bearer ${secret}` && key !== secret) return json({ error: "unauthorized" }, 401);
+    if (authorize) {
+      const allowed = await authorize(req);
+      if (allowed instanceof Response) return allowed;
+      if (allowed !== true) return json({ error: "unauthorized" }, 401);
+    } else {
+      const auth = req.headers.get("authorization");
+      const key = req.headers.get("x-api-key");
+      if (auth !== `Bearer ${secret}` && key !== secret) return json({ error: "unauthorized" }, 401);
+    }
 
     const url = new URL(req.url);
     const only = url.searchParams.get("pair");

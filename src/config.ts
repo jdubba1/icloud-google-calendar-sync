@@ -21,7 +21,7 @@ import { googleCalendarUrl } from "./caldav.js";
 import { googleAccessToken, type GoogleOAuthEnv } from "./google.js";
 import type { Pair, Side } from "./sync.js";
 
-export type PairSpec = { name: string; a: string; b: string };
+export type PairSpec = { name: string; a: string; b: string; propagateDeletes?: boolean };
 export type WindowDays = { pastDays: number; futureDays: number };
 
 export type Config = {
@@ -46,11 +46,14 @@ export function parsePairSpecs(raw: unknown): PairSpec[] {
   if (!Array.isArray(v)) throw new Error("pairs must be an array");
   return v.map((p, i) => {
     if (!p || typeof p !== "object") throw new Error(`pairs[${i}] must be an object`);
-    const { name, a, b } = p as Record<string, unknown>;
+    const { name, a, b, propagateDeletes } = p as Record<string, unknown>;
     if (typeof name !== "string" || typeof a !== "string" || typeof b !== "string") {
       throw new Error(`pairs[${i}] needs string name, a, b`);
     }
-    return { name, a, b };
+    if (propagateDeletes !== undefined && typeof propagateDeletes !== "boolean") {
+      throw new Error(`pairs[${i}].propagateDeletes must be a boolean`);
+    }
+    return { name, a, b, ...(propagateDeletes === undefined ? {} : { propagateDeletes }) };
   });
 }
 
@@ -106,5 +109,5 @@ export function resolveSide(spec: string, auths: ReturnType<typeof authsFor>): S
 
 export function pairsFor(config: Config): Pair[] {
   const auths = authsFor(config);
-  return config.pairs.map((p) => ({ name: p.name, a: resolveSide(p.a, auths), b: resolveSide(p.b, auths) }));
+  return config.pairs.map((p) => ({ ...p, a: resolveSide(p.a, auths), b: resolveSide(p.b, auths) }));
 }

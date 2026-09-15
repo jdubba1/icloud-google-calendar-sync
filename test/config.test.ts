@@ -54,3 +54,33 @@ describe("loadConfig", () => {
     expect(() => pairsFor(cfg)).toThrow(/unknown calendar side/);
   });
 });
+
+describe("delete propagation config", () => {
+  it.each([true, false])("preserves %s through file and environment config", (propagateDeletes) => {
+    const pairs = [{ name: "example", a: "google:primary", b: "icloud:https://icloud.example/cal/", propagateDeletes }];
+    const credentials = {
+      GOOGLE_OAUTH_CLIENT_ID: "id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "s",
+      GOOGLE_OAUTH_REFRESH_TOKEN: "r",
+      ICLOUD_USERNAME: "u",
+      ICLOUD_APP_PASSWORD: "p",
+    };
+    for (const config of [
+      loadConfig({ pairs }, credentials),
+      loadConfig(null, { ...credentials, CALENDAR_PAIRS: JSON.stringify(pairs) }),
+    ]) {
+      expect(pairsFor(config)[0].propagateDeletes).toBe(propagateDeletes);
+    }
+  });
+
+  it.each(["false", 0, null])("rejects an invalid delete propagation flag: %s", (propagateDeletes) => {
+    expect(() =>
+      loadConfig(
+        {
+          pairs: [{ name: "example", a: "google:primary", b: "icloud:https://icloud.example/cal/", propagateDeletes }],
+        },
+        {},
+      ),
+    ).toThrow(/propagateDeletes/);
+  });
+});

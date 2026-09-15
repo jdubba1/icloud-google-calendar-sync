@@ -104,6 +104,14 @@ is `Authorization: Bearer <secret>` or `x-api-key: <secret>`. Point
 GitHub Actions schedules are not a good cron for this: on low-traffic repos
 they fire hours late.
 
+For custom authentication, pass `authorize(req)` instead of `secret`. Return
+`true` to allow syncing, `false` to return 401, or a `Response` to return it
+unchanged. Async hooks are supported. If both options are supplied, the hook
+takes precedence.
+
+A failed sync action stops that pair for the current run. Remaining actions
+are reported as skipped and retried from fresh calendar state on the next run.
+
 ## Pairs
 
 A pair is two calendars mirrored into each other. Typical setup:

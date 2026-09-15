@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 (2026-09-15)
+
+- Stop a pair after failed writes so originals are not stamped after failed mirror creation.
+- Preserve and validate `propagateDeletes` in file and environment config.
+- Implement custom authorization and combine migration stamps with pending edits.
+
 ## 0.2.0 (2026-09-15)
 
 - Deletes propagate both ways: originals are stamped `X-SYNC-MIRRORED:<side>`
