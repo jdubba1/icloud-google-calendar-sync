@@ -1,20 +1,32 @@
 # icloud-google-calendar-sync
 
-Two-way mirror between iCloud and Google Calendar. Stateless, zero
-dependencies, about 750 lines of TypeScript. Runs as a CLI from any cron, or as
-a single HTTP handler you can drop into Next.js, a Cloudflare Worker, Bun, or
-Deno.
+Two-way mirror between iCloud and Google Calendar. Keep a user-invisible
+calendar for agents, mirrored to your preferred human calendar. Stateless,
+zero dependencies. Runs as a CLI from any cron, or as a single HTTP handler
+you can drop into any framework.
 
 ## Why
 
-Your calendar has two audiences now: you, and your agents. Gmail auto-creates
-flights and hotels in Google. AI assistants can write to Google but not iCloud.
-Meanwhile the people in your life are on iCloud and never want a Google account.
+I use Apple devices, but can't escape the Google ecosystem. My current
+ecosystem is something like:
+
+- Work email / calendars: a Google account
+- Personal email / calendar: another Google account
+- Shared calendar with my gf: an iCloud calendar
+- Random Apple events etc: another iCloud calendar
+- etc. etc. etc.
+
+You can see how this quickly becomes a nightmare. The problem gets even worse
+when you have agents trying to manage your email and calendar events. Gmail
+auto-creates flights and hotels in Google. AI assistants can write to Google
+but not iCloud. Meanwhile the non-technical people in your life are on iCloud.
 
 So: **Google is the machine layer, iCloud is the human layer.** Machines write
-to Google. Humans look at Apple Calendar. This mirrors between them every few
-minutes, both directions, and you uncheck the Google calendar in your sidebar
-and never think about it again.
+to Google. Humans look at Apple Calendar. This does a two-way sync between
+them every few minutes.
+
+In Apple Calendar, you can then just uncheck the Google calendar(s) in your
+sidebar and never think about them again.
 
 ## How it works
 
@@ -28,7 +40,7 @@ copy of the original's VCALENDAR with three changes:
 - two markers are added inside the event: `X-SYNC-SOURCE:<side>:<uid>` and
   `X-SYNC-FP:<fingerprint of the original when copied>`
 
-That is the whole state. No database, no mapping table, nothing to migrate.
+That's it. No database, no mapping table, nothing to migrate.
 Each run lists both calendars over CalDAV for a time window and decides, per
 original:
 
@@ -102,7 +114,7 @@ is `Authorization: Bearer <secret>` or `x-api-key: <secret>`. Point
 [cron-job.org](https://cron-job.org) (free) or anything else at it.
 
 GitHub Actions schedules are not a good cron for this: on low-traffic repos
-they fire hours late. Vercel Hobby crons only run daily.
+they fire hours late.
 
 ## Pairs
 
@@ -119,7 +131,7 @@ A pair is two calendars mirrored into each other. Typical setup:
 `icloud:<url>` is a CalDAV collection URL from `discover icloud`. Shared iCloud
 calendars work as long as you have write access.
 
-## Things learned the hard way
+## Notes
 
 - **Never mirror attendees.** An event on a shared iCloud calendar with the
   owner as an invitee becomes an invitation to yourself, and every device will
@@ -127,8 +139,6 @@ calendars work as long as you have write access.
 - **Google pads stored events** with `DESCRIPTION:`, `LOCATION:`,
   `STATUS:CONFIRMED`, `TRANSP:OPAQUE`. If your change detection is naive, every
   Google-side mirror looks edited on the next run and ping-pongs.
-- **iCloud CalDAV logs in with the Apple ID's primary email.** If you change
-  your primary, the old address stops working.
 - **Google CalDAV needs the CalDAV API enabled** separately from the Calendar
   API, in the same Cloud project.
 
