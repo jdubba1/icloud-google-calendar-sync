@@ -14,17 +14,19 @@ import {
   fingerprint,
   fold,
   lastModifiedMs,
+  mirroredOn,
   mirrorUid,
   sourceRef,
   toMirror,
   toOriginal,
   uidOf,
   unfold,
+  withMirrored,
   X_FP,
 } from "./ics.js";
 
 export type Side = { id: string; auth: CalDavAuth; url: string };
-export type Pair = { name: string; a: Side; b: Side };
+export type Pair = { name: string; a: Side; b: Side; propagateDeletes?: boolean };
 export type Window = { start: Date; end: Date };
 
 export type Parsed = CalDavEvent & {
@@ -34,6 +36,7 @@ export type Parsed = CalDavEvent & {
   modified: number;
   source: { side: string; uid: string } | null;
   fpAtCopy: string | null;
+  mirroredOn: string[];
 };
 
 export function parse(ev: CalDavEvent): Parsed | null {
@@ -48,6 +51,7 @@ export function parse(ev: CalDavEvent): Parsed | null {
         modified: lastModifiedMs(lines),
         source: sourceRef(lines),
         fpAtCopy: eventProp(lines, X_FP),
+        mirroredOn: mirroredOn(lines),
       }
     : null;
 }
@@ -63,10 +67,26 @@ export type Action =
       sourceSide: string;
       sourceUid: string;
       why: string;
+    }
+  | {
+      kind: "delete-if-mirror-gone";
+      on: string;
+      href: string;
+      etag: string | null;
+      mirrorSide: string;
+      mirrorUid: string;
+      why: string;
     };
 
 /** Pure: originals on `from`, mirrors on `to`. */
-export function planDirection(from: Side, to: Side, fromEvents: Parsed[], toEvents: Parsed[]): Action[] {
+export function planDirection(
+  from: Side,
+  to: Side,
+  fromEvents: Parsed[],
+  toEvents: Parsed[],
+  opts: { propagateDeletes?: boolean } = {},
+): Action[] {
+  const propagate = opts.propagateDeletes ?? true;
   const originals = new Map(fromEvents.filter((e) => !e.source).map((e) => [e.uid, e]));
   const mirrors = new Map(toEvents.filter((e) => e.source?.side === from.id).map((e) => [e.source!.uid, e]));
   const put = (on: string, ev: { href: string; etag: string | null }, ics: string[], why: string): Action => ({
@@ -83,8 +103,22 @@ export function planDirection(from: Side, to: Side, fromEvents: Parsed[], toEven
 
   for (const [uid, orig] of originals) {
     const mirror = mirrors.get(uid);
+    const mUid = mirrorUid(from.id, uid);
+    const stamped = orig.mirroredOn.includes(to.id);
+    if (!mirror && stamped && propagate) {
+      // The stamp says a mirror existed; it is gone → a human deleted it → delete the original too.
+      actions.push({
+        kind: "delete-if-mirror-gone",
+        on: from.id,
+        href: orig.href,
+        etag: orig.etag,
+        mirrorSide: to.id,
+        mirrorUid: mUid,
+        why: `mirror of ${uid} deleted on ${to.id}`,
+      });
+      continue;
+    }
     if (!mirror) {
-      const mUid = mirrorUid(from.id, uid);
       actions.push(
         put(
           to.id,
@@ -93,6 +127,12 @@ export function planDirection(from: Side, to: Side, fromEvents: Parsed[], toEven
           `new original ${uid} on ${from.id}`,
         ),
       );
+    }
+    if (propagate && !stamped) {
+      actions.push(put(from.id, orig, withMirrored(orig.lines, to.id), `stamp ${uid} as mirrored on ${to.id}`));
+    }
+    if (!mirror) {
+      continue;
     } else if (orig.fp === mirror.fpAtCopy && mirror.fp === mirror.fpAtCopy) {
       continue;
     } else if (orig.fp === mirror.fp) {
@@ -107,7 +147,9 @@ export function planDirection(from: Side, to: Side, fromEvents: Parsed[], toEven
       );
     } else if (mirror.fp !== mirror.fpAtCopy && (orig.fp === mirror.fpAtCopy || mirror.modified > orig.modified)) {
       // A human edited the copy: push it back, then re-stamp the copy.
-      actions.push(put(from.id, orig, toOriginal(mirror.lines, uid), `mirror ${mirror.uid} edited on ${to.id}`));
+      actions.push(
+        put(from.id, orig, toOriginal(mirror.lines, uid, orig.mirroredOn), `mirror ${mirror.uid} edited on ${to.id}`),
+      );
       actions.push(
         put(
           to.id,
@@ -136,8 +178,8 @@ export function planDirection(from: Side, to: Side, fromEvents: Parsed[], toEven
 }
 
 export const plan = (pair: Pair, a: Parsed[], b: Parsed[]): Action[] => [
-  ...planDirection(pair.a, pair.b, a, b),
-  ...planDirection(pair.b, pair.a, b, a),
+  ...planDirection(pair.a, pair.b, a, b, pair),
+  ...planDirection(pair.b, pair.a, b, a, pair),
 ];
 
 export type PairResult = {
@@ -182,8 +224,9 @@ export async function syncPair(pair: Pair, win: Window, opts: { dryRun?: boolean
         await putEvent(side.auth, act.href, act.ics, act.etag);
         act.etag ? result.updated++ : result.created++;
       } else {
-        const src = sides.get(act.sourceSide)!;
-        if (await findByUid(src.auth, src.url, act.sourceUid)) result.skipped++;
+        const other = sides.get(act.kind === "delete-if-orphan" ? act.sourceSide : act.mirrorSide)!;
+        const uid = act.kind === "delete-if-orphan" ? act.sourceUid : act.mirrorUid;
+        if (await findByUid(other.auth, other.url, uid)) result.skipped++;
         else (await deleteEvent(side.auth, act.href, act.etag), result.deleted++);
       }
     } catch (e) {

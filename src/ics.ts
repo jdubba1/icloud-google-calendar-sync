@@ -5,6 +5,8 @@ import { createHash } from "node:crypto";
 
 export const X_SOURCE = "X-SYNC-SOURCE";
 export const X_FP = "X-SYNC-FP";
+/** On an ORIGINAL: which sides currently hold a mirror of it (one line per side). */
+export const X_MIRRORED = "X-SYNC-MIRRORED";
 
 /** Undo RFC 5545 line folding. */
 export function unfold(ics: string): string[] {
@@ -49,6 +51,16 @@ export function eventProp(lines: string[], name: string): string | null {
 }
 
 export const uidOf = (lines: string[]) => eventProp(lines, "UID");
+
+/** Sides listed in X-SYNC-MIRRORED lines of the first VEVENT. */
+export function mirroredOn(lines: string[]): string[] {
+  const start = lines.indexOf("BEGIN:VEVENT");
+  const end = lines.indexOf("END:VEVENT", start);
+  return lines
+    .slice(start + 1, end)
+    .filter((l) => propName(l) === X_MIRRORED)
+    .map(propValue);
+}
 
 /** `X-SYNC-SOURCE:<side>:<uid>` on a mirror, null on an original. */
 export function sourceRef(lines: string[]): { side: string; uid: string } | null {
@@ -153,24 +165,40 @@ export function fingerprint(lines: string[]): string {
 
 // --- mirror construction ---------------------------------------------------
 
-const STRIP = new Set(["ATTENDEE", "ORGANIZER", X_SOURCE, X_FP]);
+const STRIP = new Set(["ATTENDEE", "ORGANIZER", X_SOURCE, X_FP, X_MIRRORED]);
 
 /** Copy `lines`, giving every VEVENT the new UID, no attendees, and `markers` (if any) before END:VEVENT. */
-function rewrite(lines: string[], uid: string, markers: string[]): string[] {
+function rewrite(lines: string[], uid: string, markers: string[], strip: Set<string> = STRIP): string[] {
   let inEvent = false;
   return lines.flatMap((l) => {
     if (l === "BEGIN:VEVENT") inEvent = true;
     if (l === "END:VEVENT") return ((inEvent = false), [...markers, l]);
     if (!inEvent) return [l];
     const name = propName(l);
-    return name === "UID" ? [`UID:${uid}`] : STRIP.has(name) ? [] : [l];
+    return name === "UID" ? [`UID:${uid}`] : strip.has(name) ? [] : [l];
   });
 }
+const STRIP_MARKERS_ONLY = new Set([X_MIRRORED]);
 
 export const toMirror = (source: string[], o: { uid: string; sourceSide: string; sourceUid: string; fp: string }) =>
   rewrite(source, o.uid, [`${X_SOURCE}:${o.sourceSide}:${o.sourceUid}`, `${X_FP}:${o.fp}`]);
 
-export const toOriginal = (mirror: string[], sourceUid: string) => rewrite(mirror, sourceUid, []);
+/** Rebuild an original from an edited mirror, keeping the original's X-SYNC-MIRRORED lines. */
+export const toOriginal = (mirror: string[], sourceUid: string, mirroredOnSides: string[]) =>
+  rewrite(
+    mirror,
+    sourceUid,
+    mirroredOnSides.map((side) => `${X_MIRRORED}:${side}`),
+  );
+
+/** The original with `side` recorded as holding a mirror. */
+export const withMirrored = (original: string[], side: string) =>
+  rewrite(
+    original,
+    uidOf(original) ?? "",
+    [...new Set([...mirroredOn(original), side])].map((s) => `${X_MIRRORED}:${s}`),
+    STRIP_MARKERS_ONLY,
+  );
 
 /** Deterministic mirror UID so a re-run never creates a second copy. */
 export const mirrorUid = (sourceSide: string, sourceUid: string) =>

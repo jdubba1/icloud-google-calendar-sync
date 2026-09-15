@@ -14,7 +14,12 @@ const icloud: Side = {
   url: "https://i/cal/",
 };
 
-function ics(uid: string, summary: string, modified = "20260901T000000Z", extra: string[] = []): string {
+function ics(
+  uid: string,
+  summary: string,
+  modified = "20260901T000000Z",
+  extra: string[] = ["X-SYNC-MIRRORED:icloud"],
+): string {
   return [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
@@ -49,10 +54,17 @@ function mirrorOf(
 }
 
 describe("planDirection", () => {
-  it("creates a mirror for a new original, with no attendees", () => {
+  it("creates a mirror for a new original, with no attendees, and stamps the original", () => {
     const flight = ev("https://g/events/f.ics", ics("f", "Flight", "20260901T000000Z", ["ATTENDEE:mailto:x@y.z"]));
     const actions = planDirection(google, icloud, [flight], []);
-    expect(actions).toHaveLength(1);
+    expect(actions.map((a) => [a.kind, a.on])).toEqual([
+      ["put", "icloud"],
+      ["put", "google"],
+    ]);
+    if (actions[1].kind === "put") {
+      expect(actions[1].ics).toContain("X-SYNC-MIRRORED:icloud");
+      expect(actions[1].ics).toContain("ATTENDEE:mailto:x@y.z");
+    }
     expect(actions[0].kind).toBe("put");
     if (actions[0].kind === "put") expect(actions[0].etag).toBeNull();
     expect(actions[0].on).toBe("icloud");
@@ -114,7 +126,9 @@ describe("planDirection", () => {
       expect(actions[0].href).toBe("https://g/events/f.ics");
       expect(actions[0].ics).toContain("UID:f\r\n");
       expect(actions[0].ics).toContain("SUMMARY:Flight w/ partner");
-      expect(actions[0].ics).not.toContain("X-SYNC");
+      expect(actions[0].ics).not.toContain("X-SYNC-SOURCE");
+      expect(actions[0].ics).not.toContain("X-SYNC-FP");
+      expect(actions[0].ics).toContain("X-SYNC-MIRRORED:icloud"); // the original keeps its stamp
     }
     if (actions[1].kind === "put") {
       const stamped = unfold(actions[1].ics);
@@ -144,9 +158,33 @@ describe("planDirection", () => {
   });
 
   it("ignores mirrors that belong to the other direction", () => {
-    const icloudOrig = ev("https://i/cal/d.ics", ics("d", "Dinner"));
+    const icloudOrig = ev("https://i/cal/d.ics", ics("d", "Dinner", "20260901T000000Z", ["X-SYNC-MIRRORED:google"]));
     const itsMirrorOnGoogle = mirrorOf(icloudOrig, icloud);
     // Planning google→icloud must not treat the icloud-sourced mirror on google as an original.
     expect(planDirection(google, icloud, [itsMirrorOnGoogle], [icloudOrig])).toEqual([]);
+  });
+
+  it("deletes an original whose mirror a human removed, but only via a confirmed lookup", () => {
+    const stamped = ev("https://g/events/f.ics", ics("f", "Flight")); // carries X-SYNC-MIRRORED:icloud
+    const actions = planDirection(google, icloud, [stamped], []);
+    expect(actions).toHaveLength(1);
+    expect(actions[0].kind).toBe("delete-if-mirror-gone");
+    if (actions[0].kind === "delete-if-mirror-gone") {
+      expect(actions[0].on).toBe("google");
+      expect(actions[0].mirrorUid).toBe("f-mirror-google");
+    }
+  });
+
+  it("stamps a pre-existing original that has a mirror but no stamp (migration)", () => {
+    const unstamped = ev("https://g/events/f.ics", ics("f", "Flight", "20260901T000000Z", []));
+    const mirror = mirrorOf(unstamped, google);
+    const actions = planDirection(google, icloud, [unstamped], [mirror]);
+    expect(actions.map((a) => [a.kind, a.on, a.why.split(" ")[0]])).toEqual([["put", "google", "stamp"]]);
+  });
+
+  it("propagateDeletes: false keeps the old behavior", () => {
+    const stamped = ev("https://g/events/f.ics", ics("f", "Flight"));
+    const actions = planDirection(google, icloud, [stamped], [], { propagateDeletes: false });
+    expect(actions.map((a) => a.kind)).toEqual(["put"]);
   });
 });

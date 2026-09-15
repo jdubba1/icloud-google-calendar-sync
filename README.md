@@ -36,6 +36,7 @@ original:
 | mirror edited by a human           | push the edit back to the original                |
 | both changed                       | later `LAST-MODIFIED` wins                        |
 | mirror's original is gone          | delete the mirror, after a UID lookup confirms it |
+| original's mirror is gone          | delete the original, same confirmation            |
 
 "Changed" is a fingerprint of what a human would notice (title, times, location,
 notes, recurrence), normalized so that a server rewriting `DTSTAMP`, `SEQUENCE`,
@@ -43,8 +44,12 @@ notes, recurrence), normalized so that a server rewriting `DTSTAMP`, `SEQUENCE`,
 does not count as an edit. Times are compared as instants, so
 `DTSTART;TZID=America/Chicago:…` and the same moment in UTC are equal.
 
-Known limit: deleting a mirror by hand does not delete the original; the mirror
-comes back on the next run. Delete an event on the side it was created.
+Deletes propagate both ways. When a mirror is created, the original is stamped
+`X-SYNC-MIRRORED:<side>`. An original that carries the stamp but has no mirror
+any more was deleted by a human on the mirror side, so the original is deleted
+too, after a UID lookup confirms the mirror is really gone. Set
+`"propagateDeletes": false` on a pair if you'd rather a deleted mirror came
+back instead.
 
 ## Setup (10 minutes)
 

@@ -9,6 +9,7 @@ import {
   toOriginal,
   uidOf,
   unfold,
+  withMirrored,
   X_FP,
   X_SOURCE,
 } from "../src/ics.js";
@@ -78,9 +79,14 @@ describe("toMirror", () => {
   });
 
   it("round-trips back to an original with the source UID and no markers", () => {
-    const back = toOriginal(mirror, "abc123@google.com");
+    const back = toOriginal(mirror, "abc123@google.com", ["icloud"]);
+    expect(back).toContain("X-SYNC-MIRRORED:icloud");
     expect(uidOf(back)).toBe("abc123@google.com");
     expect(back.some((l) => l.startsWith(X_SOURCE) || l.startsWith(X_FP))).toBe(false);
+    const stamped = withMirrored(lines, "icloud");
+    expect(stamped.filter((l) => l.startsWith("X-SYNC-MIRRORED"))).toEqual(["X-SYNC-MIRRORED:icloud"]);
+    expect(stamped.some((l) => l.startsWith("ATTENDEE"))).toBe(true); // originals keep their attendees
+    expect(withMirrored(stamped, "icloud").filter((l) => l.startsWith("X-SYNC-MIRRORED"))).toHaveLength(1);
   });
 
   it("mirror UID is deterministic and safe", () => {
