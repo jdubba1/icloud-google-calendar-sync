@@ -1,0 +1,45 @@
+{
+  "name": "icloud-google-calendar-sync",
+  "version": "0.1.0",
+  "description": "Two-way iCloud ↔ Google Calendar mirror. Stateless, zero dependencies, runs as a CLI or a single HTTP handler.",
+  "license": "MIT",
+  "author": "James Wissemann",
+  "repository": "github:jdubba1/icloud-google-calendar-sync",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "icloud-google-calendar-sync": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "mirror.config.example.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "verify": "pnpm typecheck && pnpm test && pnpm format:check && pnpm build",
+    "prepare": "pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "prettier": "^3.9.6",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.11"
+  },
+  "packageManager": "pnpm@10.14.0"
+}

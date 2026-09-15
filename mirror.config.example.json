@@ -1,0 +1,24 @@
+{
+  "google": {
+    "clientId": "1234567890-abc.apps.googleusercontent.com",
+    "clientSecret": "env:GOOGLE_OAUTH_CLIENT_SECRET",
+    "refreshToken": "env:GOOGLE_OAUTH_REFRESH_TOKEN"
+  },
+  "icloud": {
+    "username": "you@icloud.com",
+    "appPassword": "env:ICLOUD_APP_PASSWORD"
+  },
+  "pairs": [
+    {
+      "name": "personal",
+      "a": "google:you@gmail.com",
+      "b": "icloud:https://p00-caldav.icloud.com/000000000/calendars/home/"
+    },
+    {
+      "name": "shared",
+      "a": "google:abc123@group.calendar.google.com",
+      "b": "icloud:https://p00-caldav.icloud.com/000000000/calendars/abcdef.../"
+    }
+  ],
+  "window": { "pastDays": 30, "futureDays": 365 }
+}
