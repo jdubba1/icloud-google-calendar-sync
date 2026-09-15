@@ -1,0 +1,10 @@
+# Security
+
+This tool holds two credentials: a Google OAuth refresh token with calendar
+scope and an iCloud app-specific password. It sends them only to
+`oauth2.googleapis.com`, `apidata.googleusercontent.com`, and
+`*.icloud.com`, and never logs them.
+
+If you find a way it could leak them, or any other vulnerability, email the
+address on the npm package page rather than opening a public issue. Expect a
+reply within a few days.
