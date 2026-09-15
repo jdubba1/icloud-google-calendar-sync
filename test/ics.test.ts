@@ -27,7 +27,7 @@ const GOOGLE_FLIGHT = [
   "UID:abc123@google.com",
   "ORGANIZER;CN=James:mailto:james@example.com",
   "ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED;CN=Partner;X-NUM-GUESTS=0:mailto:partner@",
-  " gmail.com",
+  " example.com",
   "LAST-MODIFIED:20260911T120000Z",
   "SUMMARY:Flight to San Francisco (UA 292)",
   "LOCATION:Austin AUS",
