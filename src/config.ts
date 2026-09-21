@@ -29,6 +29,7 @@ export type DedupeConfig = {
   apiKey: string;
   rules: { prefer: string; over: string[]; mode: "review" }[];
   maxComparisons: number;
+  threshold: number;
 };
 
 export type Config = {
@@ -136,6 +137,9 @@ export function parseDedupe(raw: unknown, pairs: PairSpec[], env: Env): DedupeCo
     throw new Error("dedupe.provider must be gateway or typesafe");
   const apiKey = resolveValue(d.apiKey, env);
   if (!apiKey?.trim()) throw new Error("dedupe.apiKey is missing");
+  const threshold = d.threshold === undefined ? 0.95 : d.threshold;
+  if (typeof threshold !== "number" || !Number.isFinite(threshold) || threshold < 0 || threshold > 1)
+    throw new Error("dedupe.threshold must be a finite number from 0 to 1");
   const maxComparisons = d.maxComparisons ?? 100;
   if (
     typeof maxComparisons !== "number" ||
@@ -167,5 +171,5 @@ export function parseDedupe(raw: unknown, pairs: PairSpec[], env: Env): DedupeCo
   });
   // A single winner per group avoids conflicting chains and circular preferences.
   if (rules.some((r) => losers.has(r.prefer))) throw new Error("A preferred pair cannot also appear in over");
-  return { provider: d.provider, apiKey, rules, maxComparisons };
+  return { provider: d.provider, apiKey, rules, maxComparisons, threshold };
 }

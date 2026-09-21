@@ -163,7 +163,7 @@ export function planDirection(
         put(
           from.id,
           orig,
-          toOriginal(mirror.lines, uid, [...new Set([...orig.mirroredOn, ...(propagate ? [to.id] : [])])]),
+          toOriginal(mirror.lines, uid, [...new Set([...orig.mirroredOn, ...(propagate ? [to.id] : [])])], orig.lines),
           `mirror ${mirror.uid} edited on ${to.id}`,
         ),
       );
@@ -219,9 +219,26 @@ export const window = (pastDays: number, futureDays: number, now = new Date()): 
 });
 
 export async function syncPair(pair: Pair, win: Window, opts: { dryRun?: boolean } = {}): Promise<PairResult> {
+  if (pair.a.id === pair.b.id) throw new Error("Sync sides must have distinct IDs");
   const load = async (s: Side) =>
     (await listEvents(s.auth, s.url, win)).map(parse).filter((e): e is Parsed => e != null);
   const [a, b] = await Promise.all([load(pair.a), load(pair.b)]);
+  // Reject ambiguous identities before planning any writes. Keep existing mirror UIDs stable.
+  for (const [side, events] of [
+    [pair.a, a],
+    [pair.b, b],
+  ] as const) {
+    const uids = new Set<string>();
+    const mirrorUids = new Set<string>();
+    for (const event of events) {
+      if (uids.has(event.uid)) throw new Error("Calendar contains duplicate resource UIDs");
+      uids.add(event.uid);
+      if (event.source) continue;
+      const uid = mirrorUid(side.id, event.uid);
+      if (mirrorUids.has(uid)) throw new Error("Original UIDs produce colliding mirror UIDs");
+      mirrorUids.add(uid);
+    }
+  }
   const actions = plan(pair, a, b);
   const result: PairResult = {
     pair: pair.name,

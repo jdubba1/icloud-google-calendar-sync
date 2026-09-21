@@ -255,3 +255,37 @@ describe("sync execution", () => {
     expect((await syncPair(pair, win)).updated).toBe(0);
   });
 });
+
+it("rejects colliding side IDs before any reads or writes", async () => {
+  await expect(syncPair({ ...pair, b: { ...pair.b, id: pair.a.id } }, win)).rejects.toThrow(/distinct IDs/);
+  expect(dav.listEvents).not.toHaveBeenCalled();
+  expect(dav.putEvent).not.toHaveBeenCalled();
+});
+it("preserves the original invitation when a mirror is edited", async () => {
+  const src = original(pair.a.url + "invitation.ics");
+  src.ics = src.ics.replace(
+    "END:VEVENT",
+    "ORGANIZER:mailto:owner@example.com\r\nATTENDEE:mailto:guest@example.com\r\nEND:VEVENT",
+  );
+  events.set(src.href, src);
+  const safePair = { ...pair, propagateDeletes: false };
+  await syncPair(safePair, win);
+  const href = pair.b.url + mirrorUid(pair.a.id, "example") + ".ics";
+  const mirror = events.get(href)!;
+  events.set(href, { ...mirror, ics: mirror.ics.replace("SUMMARY:Example", "SUMMARY:Edited") });
+  const result = await syncPair(safePair, win);
+  expect(result.errors).toEqual([]);
+  expect(events.get(src.href)!.ics).toContain("SUMMARY:Edited");
+  expect(events.get(src.href)!.ics).toContain("ORGANIZER:mailto:owner@example.com");
+  expect(events.get(src.href)!.ics).toContain("ATTENDEE:mailto:guest@example.com");
+  expect(events.get(href)!.ics).not.toContain("ATTENDEE");
+});
+it("rejects sanitized UID collisions before any writes", async () => {
+  for (const [i, uid] of ["one!", "one?"].entries()) {
+    const ev = original(pair.a.url + i + ".ics");
+    ev.ics = ev.ics.replace("UID:example", `UID:${uid}`);
+    events.set(ev.href, ev);
+  }
+  await expect(syncPair(pair, win)).rejects.toThrow(/colliding mirror UIDs/);
+  expect(dav.putEvent).not.toHaveBeenCalled();
+});

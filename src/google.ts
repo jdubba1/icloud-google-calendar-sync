@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
+
 // Google OAuth for the calendar mirror. One refresh token, minted once with
 // `icloud-google-calendar-sync auth google` (a Desktop OAuth client of your
 // own), then held wherever your secrets live. Access tokens are cached
 // in-module for their lifetime.
 
-type Cached = { token: string; expiresAt: number };
+type Cached = { credentials: string; token: string; expiresAt: number };
 let cached: Cached | null = null;
 
 export type GoogleOAuthEnv = { clientId: string; clientSecret: string; refreshToken: string };
@@ -17,7 +19,10 @@ export function googleEnv(env: NodeJS.ProcessEnv = process.env): GoogleOAuthEnv 
 }
 
 export async function googleAccessToken(env: GoogleOAuthEnv, fetchImpl: typeof fetch = fetch): Promise<string> {
-  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
+  const credentials = createHash("sha256")
+    .update(JSON.stringify([env.clientId, env.clientSecret, env.refreshToken]))
+    .digest("hex");
+  if (cached && cached.credentials === credentials && cached.expiresAt > Date.now() + 60_000) return cached.token;
   const res = await fetchImpl("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -28,6 +33,8 @@ export async function googleAccessToken(env: GoogleOAuthEnv, fetchImpl: typeof f
       grant_type: "refresh_token",
     }),
     cache: "no-store",
+    redirect: "error",
+    signal: AbortSignal.timeout(15000),
   });
   const json = (await res.json()) as {
     access_token?: string;
@@ -35,10 +42,13 @@ export async function googleAccessToken(env: GoogleOAuthEnv, fetchImpl: typeof f
     error?: string;
     error_description?: string;
   };
-  if (!res.ok || !json.access_token) {
-    throw new Error(`google token refresh failed: ${json.error ?? res.status} ${json.error_description ?? ""}`.trim());
+  if (!res.ok || typeof json.access_token !== "string" || !json.access_token.trim()) {
+    throw new Error(`google token refresh failed (HTTP ${res.status})`);
   }
-  cached = { token: json.access_token, expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000 };
+  const expiresIn = json.expires_in;
+  if (typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0)
+    throw new Error("google token response has invalid expiry");
+  cached = { credentials, token: json.access_token, expiresAt: Date.now() + expiresIn * 1000 };
   return cached.token;
 }
 

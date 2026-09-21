@@ -17,9 +17,9 @@ export class CalDavError extends Error {
     readonly status: number,
     method: string,
     url: string,
-    body: string,
+    _body: string,
   ) {
-    super(`${method} ${url} → ${status}: ${body.slice(0, 300)}`);
+    super(`${method} ${new URL(url).origin} → ${status}`);
   }
 }
 
@@ -29,6 +29,9 @@ export async function dav(
   url: string,
   init: { body?: string; headers?: Record<string, string> } = {},
 ) {
+  const target = new URL(url);
+  if (target.protocol !== "https:" || target.username || target.password)
+    throw new Error("CalDAV requires HTTPS without URL credentials");
   const Authorization =
     auth.kind === "basic"
       ? "Basic " + Buffer.from(`${auth.user}:${auth.pass}`).toString("base64")
@@ -37,17 +40,20 @@ export async function dav(
     method,
     body: init.body,
     cache: "no-store",
-    headers: { Authorization, "User-Agent": "icloud-google-calendar-sync/0.1", ...init.headers },
+    redirect: "error",
+    signal: AbortSignal.timeout(15000),
+    headers: { Authorization, "User-Agent": "icloud-google-calendar-sync", ...init.headers },
   });
   const text = await res.text();
-  if (res.status >= 400) throw new CalDavError(res.status, method, url, text);
+  if (!res.ok) throw new CalDavError(res.status, method, url, text);
   return { status: res.status, text, headers: res.headers };
 }
 
 /** Unescape XML text (calendar-data arrives entity-escaped or in CDATA). */
 export function xmlText(s: string): string {
-  const raw = /^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/.exec(s)?.[1] ?? s;
-  return raw
+  const cdata = /^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/.exec(s);
+  if (cdata) return cdata[1];
+  return s
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
@@ -63,7 +69,15 @@ const tag = (xml: string, local: string): string | null =>
 export const responses = (xml: string): string[] =>
   [...xml.matchAll(/<(?:[\w-]+:)?response(?:\s[^>]*)?>([\s\S]*?)<\/(?:[\w-]+:)?response>/gi)].map((m) => m[1]);
 
-const resolveHref = (base: string, href: string) => new URL(xmlText(href.trim()), base).toString();
+const resolveHref = (base: string, href: string) => {
+  const from = new URL(base);
+  const to = new URL(xmlText(href.trim()), from);
+  const apple = (u: URL) =>
+    u.protocol === "https:" && !u.port && (u.hostname === "icloud.com" || u.hostname.endsWith(".icloud.com"));
+  if (to.username || to.password || (to.origin !== from.origin && !(apple(from) && apple(to))))
+    throw new Error("CalDAV response contains an untrusted resource URL");
+  return to.toString();
+};
 const escapeXml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -125,7 +139,9 @@ export async function listCalendars(auth: CalDavAuth, home: string): Promise<Cal
 
 async function query(auth: CalDavAuth, calendar: string, filter: string, expand = ""): Promise<CalDavEvent[]> {
   const body = `<c:calendar-query ${NS}><d:prop><d:getetag/>${expand ? `<c:calendar-data>${expand}</c:calendar-data>` : "<c:calendar-data/>"}</d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">${filter}</c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`;
-  return parseEvents((await dav(auth, "REPORT", calendar, { headers: { Depth: "1", ...XML }, body })).text, calendar);
+  const result = await dav(auth, "REPORT", calendar, { headers: { Depth: "1", ...XML }, body });
+  if (result.status !== 207) throw new Error("CalDAV query did not return multistatus");
+  return parseEvents(result.text, calendar);
 }
 
 const stamp = (d: Date) => d.toISOString().replace(/[-:]|\.\d{3}/g, "");
@@ -154,12 +170,34 @@ export const findByUid = async (auth: CalDavAuth, calendar: string, uid: string)
   ).find((event) => uidOf(unfold(event.ics)) === uid) ?? null;
 
 export function parseEvents(multistatus: string, base: string): CalDavEvent[] {
-  return responses(multistatus).flatMap((r) => {
+  if (
+    !/<(?:[\w-]+:)?multistatus(?:\s|>|\/)/i.test(multistatus) ||
+    (!/<\/(?:[\w-]+:)?multistatus\s*>/i.test(multistatus) &&
+      !/<(?:[\w-]+:)?multistatus\b[^>]*\/\s*>/i.test(multistatus))
+  )
+    throw new Error("Invalid CalDAV multistatus response");
+  const entries = responses(multistatus);
+  const opened = [...multistatus.matchAll(/<(?:[\w-]+:)?response(?:\s|>)/gi)].length;
+  if (opened !== entries.length) throw new Error("Incomplete CalDAV resource response");
+  const content = tag(multistatus, "multistatus");
+  if (!entries.length && content?.trim()) throw new Error("Unexpected CalDAV multistatus content");
+  return entries.flatMap((r) => {
+    const statuses = [...r.matchAll(/<(?:[\w-]+:)?status[^>]*>[^<]*?\s(\d{3})\b/gi)];
+    if (statuses.some((s) => Number(s[1]) >= 400)) throw new Error("CalDAV query contains failed resource properties");
     const href = tag(r, "href");
     const data = tag(r, "calendar-data");
-    if (!href || data == null) return [];
+    if (!href || data == null) throw new Error("CalDAV query is missing resource data");
+    const resolved = resolveHref(base, href);
+    const collection = new URL(base);
+    const resource = new URL(resolved);
+    if (
+      resource.origin !== collection.origin ||
+      !resource.pathname.startsWith(collection.pathname.endsWith("/") ? collection.pathname : collection.pathname + "/")
+    )
+      throw new Error("CalDAV event is outside the requested collection");
+    if (!uidOf(unfold(xmlText(data)))) throw new Error("CalDAV query contains invalid event data");
     const etag = tag(r, "getetag");
-    return [{ href: resolveHref(base, href), etag: etag ? xmlText(etag).trim() : null, ics: xmlText(data) }];
+    return [{ href: resolved, etag: etag ? xmlText(etag).trim() : null, ics: xmlText(data) }];
   });
 }
 
@@ -173,7 +211,8 @@ export async function putEvent(auth: CalDavAuth, href: string, ics: string, etag
 }
 
 export async function deleteEvent(auth: CalDavAuth, href: string, etag: string | null): Promise<void> {
-  await dav(auth, "DELETE", href, { headers: etag ? { "If-Match": etag } : {} });
+  if (!etag) throw new Error("Refusing to delete an event without an ETag");
+  await dav(auth, "DELETE", href, { headers: { "If-Match": etag } });
 }
 
 export const googleCalendarUrl = (calendarId: string) =>

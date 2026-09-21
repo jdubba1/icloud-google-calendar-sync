@@ -115,6 +115,7 @@ describe("duplicate review endpoint", () => {
       provider: "gateway" as const,
       apiKey: "test-key",
       maxComparisons: 100,
+      threshold: 0.95,
       rules: [{ prefer: "shared", over: ["personal"], mode: "review" as const }],
     },
   };

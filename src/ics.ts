@@ -44,10 +44,18 @@ export const propValue = (line: string): string => line.slice(line.indexOf(":") 
 
 /** First VEVENT's value for a property, or null. */
 export function eventProp(lines: string[], name: string): string | null {
-  const start = lines.indexOf("BEGIN:VEVENT");
-  const end = lines.indexOf("END:VEVENT", start);
-  const hit = lines.slice(start + 1, end).find((l) => propName(l) === name);
-  return hit == null ? null : propValue(hit);
+  let depth = 0;
+  for (const line of lines) {
+    if (!depth) {
+      if (line === "BEGIN:VEVENT") depth = 1;
+      continue;
+    }
+    if (line.startsWith("BEGIN:")) depth++;
+    else if (line.startsWith("END:")) {
+      if (--depth === 0) return null;
+    } else if (depth === 1 && propName(line) === name) return propValue(line);
+  }
+  return null;
 }
 
 export const uidOf = (lines: string[]) => eventProp(lines, "UID");
@@ -131,8 +139,13 @@ export function normalizeDateLine(line: string): string {
   const local = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
   if (m[7] === "Z") return `${name}=${local}`;
   if (!tz) return `${name}=${local}F`;
-  const off = zoneOffsetMin(tz, local);
-  return off == null ? `${name}=${value}@${tz}` : `${name}=${local - off * 60_000}`;
+  const offsets = [local - 86400000, local, local + 86400000].map((at) => zoneOffsetMin(tz, at));
+  if (offsets.some((offset) => offset === null)) return `${name}=${value}@${tz}`;
+  const candidates = offsets
+    .map((offset) => local - offset! * 60_000)
+    .filter((at) => at + zoneOffsetMin(tz, at)! * 60_000 === local);
+  // RFC 5545: first occurrence of an ambiguous time; pre-gap offset for a nonexistent time.
+  return `${name}=${candidates.length ? Math.min(...candidates) : local - offsets[0]! * 60_000}`;
 }
 
 const normalizeText = (v: string) =>
@@ -144,11 +157,15 @@ const normalizeText = (v: string) =>
 
 /** Stable fingerprint of the human-visible content of every VEVENT in the file. */
 export function fingerprint(lines: string[]): string {
-  const sig: string[] = [];
+  let sig: string[] = [];
+  const components: string[][] = [];
   let depth = 0; // 1 inside VEVENT, 2 inside a VALARM within it
   for (const l of lines) {
-    if (l === "BEGIN:VEVENT") (sig.push("|"), (depth = 1));
-    else if (l === "END:VEVENT") depth = 0;
+    if (l === "BEGIN:VEVENT") {
+      sig = ["|"];
+      components.push(sig);
+      depth = 1;
+    } else if (l === "END:VEVENT") depth = 0;
     else if (l === "BEGIN:VALARM") depth = 2;
     else if (l === "END:VALARM") depth = 1;
     else if (depth === 1 && FP_PROPS.has(propName(l))) {
@@ -160,7 +177,9 @@ export function fingerprint(lines: string[]): string {
       }
     }
   }
-  return createHash("sha1").update(sig.sort().join("\n")).digest("hex").slice(0, 16);
+  const signatures = components.map((properties) => properties.sort().join("\n")).sort();
+  const content = signatures.length <= 1 ? (signatures[0] ?? "") : JSON.stringify(signatures);
+  return createHash("sha1").update(content).digest("hex").slice(0, 16);
 }
 
 // --- mirror construction ---------------------------------------------------
@@ -184,12 +203,39 @@ export const toMirror = (source: string[], o: { uid: string; sourceSide: string;
   rewrite(source, o.uid, [`${X_SOURCE}:${o.sourceSide}:${o.sourceUid}`, `${X_FP}:${o.fp}`]);
 
 /** Rebuild an original from an edited mirror, keeping the original's X-SYNC-MIRRORED lines. */
-export const toOriginal = (mirror: string[], sourceUid: string, mirroredOnSides: string[]) =>
-  rewrite(
+export function toOriginal(mirror: string[], sourceUid: string, mirroredOnSides: string[], original: string[] = []) {
+  const invitations = new Map<string, string[]>();
+  let component: string[] = [];
+  let depth = 0;
+  for (const line of original) {
+    if (line === "BEGIN:VEVENT") {
+      component = [line];
+      depth = 1;
+    } else if (line === "END:VEVENT") {
+      component.push(line);
+      const recurrence = component.find((l) => propName(l) === "RECURRENCE-ID");
+      invitations.set(
+        recurrence ? normalizeDateLine(recurrence) : "",
+        component.filter((l) => ["ATTENDEE", "ORGANIZER"].includes(propName(l))),
+      );
+      depth = 0;
+    } else if (depth) {
+      if (line.startsWith("BEGIN:")) depth++;
+      else if (line.startsWith("END:")) depth--;
+      else if (depth === 1) component.push(line);
+    }
+  }
+  let recurrence = "";
+  return rewrite(
     mirror,
     sourceUid,
     mirroredOnSides.map((side) => `${X_MIRRORED}:${side}`),
-  );
+  ).flatMap((line) => {
+    if (line === "BEGIN:VEVENT") recurrence = "";
+    if (propName(line) === "RECURRENCE-ID") recurrence = normalizeDateLine(line);
+    return line === "END:VEVENT" ? [...(invitations.get(recurrence) ?? []), line] : [line];
+  });
+}
 
 /** The original with `side` recorded as holding a mirror. */
 export const withMirrored = (original: string[], side: string) =>

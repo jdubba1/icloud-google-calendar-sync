@@ -22,15 +22,13 @@ const resource = (ics: string, href = "https://calendar.example/event.ics"): Cal
 });
 const match: JevComparison = {
   status: "classified",
-  choice: "same_event",
-  confidence: null,
-  probabilities: { same_event: 0.99, related: 0.01, different: 0, uncertain: 0 },
+  probability: 0.99,
   suggestedDuplicate: true,
 };
 
 describe("priority config", () => {
   it("resolves keys and supports file and env configuration", () => {
-    expect(config().dedupe).toEqual({ ...dedupe, apiKey: "test-key", maxComparisons: 100 });
+    expect(config().dedupe).toEqual({ ...dedupe, apiKey: "test-key", maxComparisons: 100, threshold: 0.95 });
     expect(
       loadConfig({ pairs }, { CALENDAR_DEDUPE: JSON.stringify({ ...dedupe, provider: "typesafe" }), KEY: "direct-key" })
         .dedupe?.apiKey,
@@ -52,6 +50,16 @@ describe("priority config", () => {
     { ...dedupe, rules: [rule, { prefer: "personal", over: ["shared"], mode: "review" }] },
   ])("rejects invalid or conflicting priorities %#", (raw) => {
     expect(() => loadConfig({ pairs, dedupe: raw }, { KEY: "test-key" })).toThrow();
+  });
+  it.each([0, 0.8, 1])("reads threshold %s from file and environment", (threshold) => {
+    expect(loadConfig({ pairs, dedupe: { ...dedupe, threshold } }, { KEY: "key" }).dedupe?.threshold).toBe(threshold);
+    expect(
+      loadConfig({ pairs }, { KEY: "key", CALENDAR_DEDUPE: JSON.stringify({ ...dedupe, threshold }) }).dedupe
+        ?.threshold,
+    ).toBe(threshold);
+  });
+  it.each([-0.1, 1.1, NaN, Infinity, "0.9", null])("rejects invalid threshold %s", (threshold) => {
+    expect(() => loadConfig({ pairs, dedupe: { ...dedupe, threshold } }, { KEY: "key" })).toThrow(/threshold/);
   });
   it("rejects ambiguous pair names", () => {
     expect(() => loadConfig({ pairs: [pairs[0], pairs[0]], dedupe }, { KEY: "test" })).toThrow(/unique/);
@@ -129,12 +137,25 @@ describe("review runner", () => {
       probability: 0.99,
     });
   });
-  it("does not suggest related or unavailable results", async () => {
-    for (const result of [{ ...match, suggestedDuplicate: false }, { status: "unavailable" } as const]) {
+  it("does not suggest low-probability or unavailable results", async () => {
+    for (const result of [
+      { ...match, probability: 0.5, suggestedDuplicate: false },
+      { status: "unavailable" } as const,
+    ]) {
       const report = await reviewDuplicates(config(), { range, list: list(), compare: async () => result });
       expect(report.suggestions).toEqual([]);
       expect(report.unavailable).toBe(result.status === "unavailable" ? 1 : 0);
     }
+  });
+  it.each([0.8, 0.9])("applies configured threshold %s even with a custom matcher", async (threshold) => {
+    const cfg = config();
+    cfg.dedupe!.threshold = threshold;
+    const report = await reviewDuplicates(cfg, {
+      range,
+      list: list(),
+      compare: async () => ({ status: "classified", probability: 0.8, suggestedDuplicate: threshold === 0.9 }),
+    });
+    expect(report.suggestions).toHaveLength(threshold === 0.8 ? 1 : 0);
   });
   it("bounds comparisons and reports truncation", async () => {
     const cfg = config();
@@ -186,9 +207,8 @@ it("runs calendar reads through Gateway without any calendar writes or extra eve
     return Response.json({
       answers: {
         match: {
-          type: "choice",
-          choice: "same_event",
-          probabilities: match.status === "classified" ? match.probabilities : {},
+          type: "boolean",
+          probability: 0.99,
         },
       },
     });

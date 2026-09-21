@@ -167,8 +167,8 @@ export async function reviewDuplicates(
           report.comparisons++;
           const result = await compare(keep, duplicate);
           if (result.status === "unavailable") report.unavailable++;
-          if (result.status === "classified" && result.suggestedDuplicate) {
-            report.suggestions.push({ keep, duplicate, probability: result.probabilities.same_event });
+          if (result.status === "classified" && result.probability >= dedupe.threshold) {
+            report.suggestions.push({ keep, duplicate, probability: result.probability });
           }
         }
       }

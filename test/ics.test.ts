@@ -155,3 +155,54 @@ describe("fingerprint", () => {
     expect(fingerprint(utc)).toBe(fingerprint(base));
   });
 });
+
+it("ignores alarm properties when reading event identity", () => {
+  expect(eventProp(["BEGIN:VEVENT", "BEGIN:VALARM", "UID:alarm", "END:VALARM", "UID:event", "END:VEVENT"], "UID")).toBe(
+    "event",
+  );
+  expect(eventProp(["UID:outside"], "UID")).toBeNull();
+});
+it("preserves invitations per occurrence when writing an edited mirror back", () => {
+  const source = [
+    "BEGIN:VCALENDAR",
+    "BEGIN:VEVENT",
+    "UID:x",
+    "ORGANIZER:mailto:owner@example.com",
+    "ATTENDEE:mailto:first@example.com",
+    "END:VEVENT",
+    "BEGIN:VEVENT",
+    "UID:x",
+    "RECURRENCE-ID:20261101T120000Z",
+    "ATTENDEE:mailto:second@example.com",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ];
+  const mirror = toMirror(source, { uid: "m", sourceSide: "a", sourceUid: "x", fp: "x" });
+  const restored = toOriginal(mirror, "x", [], source);
+  expect(restored).toEqual(source);
+  expect(mirror.some((l) => l.startsWith("ATTENDEE") || l.startsWith("ORGANIZER"))).toBe(false);
+});
+it("detects fields swapped between recurring occurrences and ignores component order", () => {
+  const occurrence = (date: string, title: string) => [
+    "BEGIN:VEVENT",
+    "UID:x",
+    `RECURRENCE-ID:${date}`,
+    `SUMMARY:${title}`,
+    "END:VEVENT",
+  ];
+  const a = occurrence("20261101T120000Z", "One"),
+    b = occurrence("20261102T120000Z", "Two");
+  expect(fingerprint([...a, ...b])).toBe(fingerprint([...b, ...a]));
+  expect(fingerprint([...a, ...b])).not.toBe(
+    fingerprint([...occurrence("20261101T120000Z", "Two"), ...occurrence("20261102T120000Z", "One")]),
+  );
+});
+it.each([
+  ["20260308T033000", "2026-03-08T08:30:00Z"],
+  ["20261101T023000", "2026-11-01T08:30:00Z"],
+  ["20261101T013000", "2026-11-01T06:30:00Z"],
+  ["20260308T023000", "2026-03-08T08:30:00Z"],
+])("normalizes Chicago DST time %s", async (local, utc) => {
+  const { normalizeDateLine } = await import("../src/ics.js");
+  expect(normalizeDateLine(`DTSTART;TZID=America/Chicago:${local}`)).toBe(`DTSTART=${Date.parse(utc)}`);
+});

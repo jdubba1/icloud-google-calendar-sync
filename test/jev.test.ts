@@ -3,16 +3,7 @@ import { createJevMatcher, type JevEvent } from "../src/jev.js";
 
 const a: JevEvent = { title: "Hotel booking", start: Date.UTC(2026, 8, 23), end: Date.UTC(2026, 8, 25), allDay: true };
 const b: JevEvent = { ...a, title: "Stay at hotel" };
-const answer = (choice = "same_event", same = 0.99, confidence = 0.98) => ({
-  answers: {
-    match: {
-      type: "choice",
-      choice,
-      confidence,
-      probabilities: { same_event: same, related: 1 - same, different: 0, uncertain: 0 },
-    },
-  },
-});
+const answer = (p: unknown = 0.99) => ({ answers: { match: { type: "noul", noul: p } } });
 function setup(body: unknown = answer()) {
   const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => Response.json(body));
   return { fetch, matcher: createJevMatcher({ provider: "typesafe", apiKey: "test-key", fetch }) };
@@ -29,21 +20,22 @@ describe("optional Jev matcher", () => {
     expect(init?.redirect).toBe("error");
     const request = JSON.parse(String(init?.body));
     expect(request.model).toBe("jev-latest");
-    expect(request.questions.match.type).toBe("choice");
-    const events = JSON.parse(request.state);
+    expect(request.questions.match.type).toBe("noul");
+    expect(Object.keys(request.state).sort()).toEqual(["eventA", "eventB"]);
+    const events = Object.values(request.state) as Record<string, unknown>[];
     expect(events).toHaveLength(2);
     expect(Object.keys(events[0]).sort()).toEqual(["allDay", "end", "location", "start", "title"]);
-    expect(request.state).not.toMatch(/private|secret/);
+    expect(JSON.stringify(request.state)).not.toMatch(/private|secret/);
   });
 
   it("supports Gateway keys and its native probability-only response", async () => {
-    const body = answer();
-    const { confidence: _confidence, ...match } = body.answers.match;
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json({ answers: { match } }));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({ answers: { match: { type: "boolean", probability: 0.99 } } }));
     const matcher = createJevMatcher({ provider: "gateway", apiKey: "gateway-key", fetch });
     expect(await matcher.compare(a, b)).toMatchObject({
       status: "classified",
-      confidence: null,
+      probability: 0.99,
       suggestedDuplicate: true,
     });
     const [url, init] = fetch.mock.calls[0];
@@ -56,15 +48,8 @@ describe("optional Jev matcher", () => {
     });
     const request = JSON.parse(String(init?.body));
     expect(request).not.toHaveProperty("model");
-    expect(request.questions.match.criteria).toHaveProperty("uncertain");
-  });
-
-  it("uses declared probability rounding and rejects invalid rounding", async () => {
-    const response = { ...answer(), rounding: { probabilityDecimals: 2 } };
-    response.answers.match.probabilities.related = 0.02;
-    expect(await setup(response).matcher.compare(a, b)).toMatchObject({ status: "classified" });
-    response.rounding.probabilityDecimals = -1;
-    expect(await setup(response).matcher.compare(a, b)).toEqual({ status: "unavailable" });
+    expect(request.questions.match.type).toBe("boolean");
+    expect(request.questions.match).not.toHaveProperty("criteria");
   });
 
   it("skips nonoverlapping and adjacent occurrences without a request", async () => {
@@ -76,19 +61,29 @@ describe("optional Jev matcher", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["related", 0.01, 0.98],
-    ["same_event", 0.6, 0.98],
-  ])("does not suggest duplicates for %s with probability %s and confidence %s", async (choice, p, confidence) => {
-    const { matcher } = setup(answer(choice, p, confidence));
-    expect(await matcher.compare(a, b)).toMatchObject({ status: "classified", suggestedDuplicate: false });
+  it.each([0, 0.35, 0.5, 0.949, 0.95, 1])("applies the review threshold to %s", async (p) => {
+    expect(await setup(answer(p)).matcher.compare(a, b)).toMatchObject({
+      status: "classified",
+      probability: p,
+      suggestedDuplicate: p >= 0.95,
+    });
   });
 
+  it.each([0, 0.8, 0.81, 1])("uses a custom threshold of %s", async (threshold) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(answer(0.8)));
+    const matcher = createJevMatcher({ provider: "typesafe", apiKey: "test", threshold, fetch });
+    expect(await matcher.compare(a, b)).toMatchObject({ probability: 0.8, suggestedDuplicate: 0.8 >= threshold });
+  });
+  it.each([-0.1, 1.1, NaN, Infinity, "0.9", null])("rejects invalid matcher threshold %s", (threshold) => {
+    expect(() => createJevMatcher({ provider: "typesafe", apiKey: "test", threshold: threshold as number })).toThrow(
+      /threshold/,
+    );
+  });
   it("caches reversed pairs, protects cached data, and invalidates on edits", async () => {
     const { matcher, fetch } = setup();
     const result = await matcher.compare(a, b);
-    if (result.status === "classified") result.probabilities.same_event = 0;
-    expect(await matcher.compare(b, a)).toMatchObject({ probabilities: { same_event: 0.99 } });
+    if (result.status === "classified") result.probability = 0;
+    expect(await matcher.compare(b, a)).toMatchObject({ probability: 0.99 });
     expect(fetch).toHaveBeenCalledTimes(1);
     await matcher.compare({ ...a, location: "different hotel" }, b);
     expect(fetch).toHaveBeenCalledTimes(2);
@@ -111,22 +106,15 @@ describe("optional Jev matcher", () => {
   it.each([
     {},
     { answers: null },
-    answer("delete_everything"),
-    answer("same_event", 1.1),
-    { answers: { match: { ...answer().answers.match, probabilities: { same_event: 1 } } } },
-    {
-      answers: {
-        match: {
-          ...answer().answers.match,
-          probabilities: { same_event: 0.99, related: 0.9, different: 0, uncertain: 0 },
-        },
-      },
-    },
-    answer("related", 0.99),
-    answer("same_event", 0.99, NaN),
-  ])("rejects malformed or inconsistent provider output %#", async (body) => {
-    const { matcher } = setup(body);
-    expect(await matcher.compare(a, b)).toEqual({ status: "unavailable" });
+    answer(-0.1),
+    answer(1.1),
+    answer("0.99"),
+    answer(null),
+    answer(NaN),
+    { answers: { match: { type: "choice", noul: 0.99 } } },
+    { answers: { match: { type: "boolean", probability: 0.99 } } },
+  ])("rejects malformed or wrong-provider output %#", async (body) => {
+    expect(await setup(body).matcher.compare(a, b)).toEqual({ status: "unavailable" });
   });
 
   it("does not retry or cache failures, and never exposes provider error text", async () => {
@@ -179,12 +167,24 @@ describe("optional Jev matcher", () => {
 });
 
 it("supports explicit Gateway OIDC without treating tokens as static API keys", async () => {
-  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(answer()));
+  const fetch = vi
+    .fn<typeof globalThis.fetch>()
+    .mockResolvedValue(Response.json({ answers: { match: { type: "boolean", probability: 0.99 } } }));
   const matcher = createJevMatcher({ provider: "gateway", apiKey: "oidc-token", gatewayAuth: "oidc", fetch });
-  await matcher.compare(a, b);
+  expect(await matcher.compare(a, b)).toMatchObject({ status: "classified", probability: 0.99 });
   expect(fetch.mock.calls[0][1]?.headers).toMatchObject({
     Authorization: "Bearer oidc-token",
     "ai-gateway-auth-method": "oidc",
   });
   expect(() => createJevMatcher({ provider: "typesafe", apiKey: "key", gatewayAuth: "oidc" })).toThrow();
+});
+
+it.each([
+  { type: "boolean", probability: "0.99" },
+  { type: "boolean", probability: 1.1 },
+  { type: "noul", noul: 0.99 },
+])("rejects invalid Gateway answers %#", async (match) => {
+  const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json({ answers: { match } }));
+  const matcher = createJevMatcher({ provider: "gateway", apiKey: "test", fetch });
+  expect(await matcher.compare(a, b)).toEqual({ status: "unavailable" });
 });

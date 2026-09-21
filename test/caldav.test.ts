@@ -54,3 +54,38 @@ it("requests expanded occurrences only for review", async () => {
   expect(fetch.mock.calls[0][1].method).toBe("REPORT");
   expect(fetch.mock.calls[0][1].body).toContain('<c:expand start="20260901T000000Z" end="20261001T000000Z"/>');
 });
+
+it.each([
+  "<html>Login required</html>",
+  "<d:multistatus><d:response><d:href>/events/x</d:href></d:multistatus>",
+  "<d:multistatus><d:error>failed</d:error></d:multistatus>",
+  "<d:multistatus><d:response><d:status>HTTP/1.1 403 Forbidden</d:status></d:response></d:multistatus>",
+  "<d:multistatus><d:response><d:href>/events/x</d:href></d:response></d:multistatus>",
+])("does not interpret an invalid or incomplete report as absence %#", async (body) => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 207 })));
+  await expect(findByUid(auth, calendar, "wanted")).rejects.toThrow();
+});
+it.each(["https://attacker.example/events/0.ics", "/other-calendar/0.ics"])(
+  "rejects event URLs outside the collection: %s",
+  async (href) => {
+    const { parseEvents } = await import("../src/caldav.js");
+    expect(() =>
+      parseEvents(`<d:multistatus>${response("wanted", 0).replace("/events/0.ics", href)}</d:multistatus>`, calendar),
+    ).toThrow();
+  },
+);
+it("keeps entity-looking text inside CDATA unchanged", async () => {
+  const { xmlText } = await import("../src/caldav.js");
+  expect(xmlText("<![CDATA[SUMMARY:Literally &amp; and &#65;]]>")).toBe("SUMMARY:Literally &amp; and &#65;");
+  expect(xmlText("SUMMARY:A &amp; B")).toBe("SUMMARY:A & B");
+});
+it("refuses unconditional deletion and prevents redirect following", async () => {
+  const { deleteEvent, dav } = await import("../src/caldav.js");
+  const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+  vi.stubGlobal("fetch", fetch);
+  await expect(deleteEvent(auth, calendar + "x.ics", null)).rejects.toThrow(/ETag/);
+  expect(fetch).not.toHaveBeenCalled();
+  fetch.mockResolvedValue(new Response(null, { status: 204 }));
+  await dav(auth, "DELETE", calendar + "x.ics");
+  expect(fetch.mock.calls[0][1]).toMatchObject({ redirect: "error", signal: expect.any(AbortSignal) });
+});

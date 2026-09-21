@@ -8,9 +8,10 @@
 //
 // Config: --config <path> (default ./mirror.config.json if present), plus env.
 
+import { randomBytes, createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
-import { calendarHome, currentUserPrincipal, ICLOUD_BASE, listCalendars, type CalDavAuth } from "./caldav.js";
+import { calendarHome, currentUserPrincipal, ICLOUD_BASE, listCalendars } from "./caldav.js";
 import { authsFor, loadConfig, pairsFor, type Config } from "./config.js";
 import { googleAccessToken } from "./google.js";
 import { syncPair, window } from "./sync.js";
@@ -67,7 +68,10 @@ async function authGoogle(): Promise<void> {
     );
   }
   const port = Number(flag("--port") ?? 8765);
-  const redirect = `http://localhost:${port}/`;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("invalid callback port");
+  const redirect = `http://127.0.0.1:${port}/`;
+  const state = randomBytes(32).toString("base64url");
+  const verifier = randomBytes(32).toString("base64url");
   const url =
     "https://accounts.google.com/o/oauth2/v2/auth?" +
     new URLSearchParams({
@@ -77,20 +81,38 @@ async function authGoogle(): Promise<void> {
       scope: "https://www.googleapis.com/auth/calendar",
       access_type: "offline",
       prompt: "consent",
+      state,
+      code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+      code_challenge_method: "S256",
     });
   console.log("Open this in a browser and approve:\n\n  " + url + "\n");
   const code = await new Promise<string>((resolve, reject) => {
     const server = createServer((req, res) => {
       const q = new URL(req.url ?? "/", redirect).searchParams;
+      if (req.method !== "GET" || q.get("state") !== state) {
+        res.writeHead(400).end("Invalid OAuth callback");
+        return;
+      }
+      clearTimeout(timer);
       res.end("<h2>Done. You can close this tab.</h2>");
       server.close();
       const c = q.get("code");
       c ? resolve(c) : reject(new Error(q.get("error") ?? "no code"));
     });
-    server.listen(port);
+    const timer = setTimeout(() => {
+      server.close();
+      reject(new Error("OAuth callback timed out"));
+    }, 300000);
+    server.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    server.listen(port, "127.0.0.1");
   });
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
+    redirect: "error",
+    signal: AbortSignal.timeout(15000),
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       code,
@@ -98,14 +120,17 @@ async function authGoogle(): Promise<void> {
       client_secret: clientSecret,
       redirect_uri: redirect,
       grant_type: "authorization_code",
+      code_verifier: verifier,
     }),
   });
   const tok = (await res.json()) as { refresh_token?: string; error?: string; error_description?: string };
-  if (!tok.refresh_token) throw new Error(`token exchange failed: ${tok.error} ${tok.error_description ?? ""}`);
+  if (!res.ok || typeof tok.refresh_token !== "string" || !tok.refresh_token.trim())
+    throw new Error(`token exchange failed (HTTP ${res.status})`);
   const out = flag("--out");
   if (out) {
     writeFileSync(out, JSON.stringify({ clientId, clientSecret, refreshToken: tok.refresh_token }, null, 2) + "\n", {
       mode: 0o600,
+      flag: "wx",
     });
     console.log(`saved ${out}`);
   } else {

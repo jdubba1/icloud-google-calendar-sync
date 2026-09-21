@@ -1,7 +1,8 @@
 # icloud-google-calendar-sync
 
 Two-way iCloud and Google Calendar sync. Creates and edits sync both ways;
-automatic deletion is off by default.
+automatic deletion is off by default. Requires Node.js 20+ or a runtime with
+Node-compatible crypto and Buffer support.
 
 [Overview and setup](https://jimbo.sh/icloud-google-calendar-sync) /
 [npm](https://www.npmjs.com/package/icloud-google-calendar-sync)
@@ -53,7 +54,9 @@ pause your scheduler, remove both copies, then resume it.
 Set `"propagateDeletes": true` on a pair to opt into deletions in both directions.
 In this mode, originals are stamped `X-SYNC-MIRRORED:<side>` after mirror creation.
 A missing mirror deletes its stamped original; a missing original deletes its
-mirror. Both require an exact UID lookup across all dates to confirm absence.
+mirror. Both require an exact UID lookup across all dates to confirm absence
+and an ETag for a conditional deletion. Failed or incomplete CalDAV reports stop
+the operation; they do not count as an empty calendar.
 Omitting the option or setting `"propagateDeletes": false` disables both kinds
 of deletion, including for events stamped by an earlier version.
 
@@ -70,7 +73,9 @@ for the new behavior, or explicitly set it to `true` to retain deletion propagat
    npx icloud-google-calendar-sync auth google --client-id … --client-secret …
    ```
 
-   Approve in the browser. It prints a refresh token.
+   Approve in the browser. It prints a refresh token. The callback listens only
+   on loopback, checks OAuth state, and uses PKCE. `--out credentials.tokens.json`
+   saves a new owner-readable file instead; it refuses to overwrite existing files.
 
 2. **iCloud.** At [account.apple.com](https://account.apple.com) → Sign-In &
    Security → App-Specific Passwords, make one. Your username is your Apple ID's
@@ -99,7 +104,7 @@ for the new behavior, or explicitly set it to `true` to retain deletion propagat
 ## As an HTTP handler
 
 ```ts
-// app/api/calendar/sync/route.ts (Next.js), or any Fetch-API runtime
+// app/api/calendar/sync/route.ts (Next.js, Node runtime)
 import { createHandler, loadConfig } from "icloud-google-calendar-sync";
 
 export const GET = createHandler({
@@ -142,9 +147,20 @@ A pair is two calendars mirrored into each other. Typical setup:
 
 `google:<calendarId>` is a Google calendar id (the email for the primary).
 `icloud:<url>` is a CalDAV collection URL from `discover icloud`. Shared iCloud
-calendars work as long as you have write access.
+calendars work as long as you have write access. Each sync pair must have distinct
+side IDs (the config loader uses `google` and `icloud`).
 
 ## Notes
+
+- CalDAV requests require HTTPS, reject redirects, and time out after 15 seconds.
+  Event URLs returned by the server must stay inside the requested collection.
+- Edits from a mirror preserve the original's attendees and organizer; those
+  fields remain absent from the mirror.
+- Recurring-event fingerprints keep each occurrence's fields together. Updating
+  from an earlier version can cause a one-time fingerprint refresh on recurring
+  resources. Use a dry run when upgrading.
+- Colliding resource or mirror UIDs stop the pair before writes. Existing mirror
+  UID formats are preserved so an upgrade does not create replacement copies.
 
 - **Never mirror attendees.** An event on a shared iCloud calendar with the
   owner as an invitee becomes an invitation to yourself, and every device will
@@ -173,6 +189,7 @@ Set a priority rule using your existing pair names:
   "dedupe": {
     "provider": "gateway",
     "apiKey": "env:AI_GATEWAY_API_KEY",
+    "threshold": 0.95,
     "rules": [{ "prefer": "shared", "over": ["personal"], "mode": "review" }]
   }
 }
@@ -248,7 +265,7 @@ const result = await matcher.compare(
 
 if (result.status === "classified" && result.suggestedDuplicate) {
   // Show the pair for review. Keep calendar writes outside this module.
-  console.log("Possible duplicate", result.probabilities.same_event);
+  console.log("Possible duplicate", result.probability);
 }
 ```
 
@@ -274,12 +291,21 @@ intervals and text fields over 500 characters are rejected. Only overlapping
 intervals are sent, so events with incorrect or shifted times can be missed.
 
 Results are `skipped` (no overlap), `unavailable` (request or response failure),
-or `classified`. Choices are `same_event`, `related`, `different`, and `uncertain`.
-A trip and its hotel can overlap without being duplicates. Suggestions require
-a `same_event` probability of at least 0.95. This is a review threshold, not
-measured calendar-matching accuracy. Provider confidence is returned when present,
-or `null` when absent; it is not required for Gateway results.
-An unavailable or uncertain result should leave normal syncing alone.
+or `classified`, with a single `probability` that the occurrences describe the same
+real-world event or reservation. The request supplies named `eventA` and `eventB`
+objects and asks one yes/no question. It uses TypeSafe's Noul primitive directly,
+or Gateway's equivalent boolean primitive.
+Suggestions require a probability at least equal to `dedupe.threshold` (default
+`0.95`). Set it in the config file or `CALENDAR_DEDUPE` JSON, or pass `threshold`
+to `createJevMatcher`. It must be a finite number from 0 to 1, inclusive. Lower
+values surface more candidates; higher values require stronger matches. The
+review runner uses the config threshold even when given a custom matcher.
+This is a review threshold,
+not measured calendar-matching accuracy. Results never authorize calendar changes.
+An unavailable or low-probability result leaves normal syncing alone.
+
+The matcher result replaces the earlier four-way `choice`, `probabilities`, and
+`confidence` fields with `probability`. The review report format is unchanged.
 
 Requests time out after 5 seconds and are not retried. `timeoutMs` can be set from
 1 to 60000. Successful results are cached by the compared fields, including edits,
