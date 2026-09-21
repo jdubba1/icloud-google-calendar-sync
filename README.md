@@ -3,6 +3,9 @@
 Two-way iCloud and Google Calendar sync. Creates and edits sync both ways;
 automatic deletion is off by default.
 
+[Overview and setup](https://jimbo.sh/icloud-google-calendar-sync) /
+[npm](https://www.npmjs.com/package/icloud-google-calendar-sync)
+
 ## Why
 
 Keep Google and iCloud calendars in sync, including shared calendars and events
