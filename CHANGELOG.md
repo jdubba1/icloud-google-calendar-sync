@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 (2026-09-21)
+
+- Automatic deletion now requires explicit `propagateDeletes: true`. The default
+  and `false` preserve orphaned mirrors and recreate missing mirrors, even for
+  originals stamped by previous versions. Creates and edits continue to sync.
+- Verify exact event UIDs in deletion checks. Google CalDAV can return unrelated
+  events despite a UID filter, which previously kept orphaned mirrors visible.
+
 ## 0.2.2 (2026-09-15)
 
 - A failed `X-SYNC-MIRRORED` stamp no longer stops the pair. Originals that

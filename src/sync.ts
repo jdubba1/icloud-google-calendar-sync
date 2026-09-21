@@ -4,9 +4,9 @@
 // X-SYNC-SOURCE:<side>:<uid> and X-SYNC-FP:<fingerprint at copy time>). Per
 // original: no mirror → create; original changed → refresh mirror; mirror
 // changed → push the edit back (both changed → later LAST-MODIFIED wins);
-// mirror whose original is gone → delete it, after a UID lookup confirms.
-// A missing mirror deletes its stamped original after a UID lookup, unless
-// propagateDeletes is false. Originals are stamped only after mirror creation.
+// No automatic deletions by default. With propagateDeletes explicitly enabled,
+// missing originals or mirrors propagate deletion after an exact UID lookup.
+// Originals are stamped only after mirror creation when deletion is enabled.
 
 import type { CalDavAuth, CalDavEvent } from "./caldav.js";
 import { deleteEvent, findByUid, listEvents, putEvent } from "./caldav.js";
@@ -90,7 +90,7 @@ export function planDirection(
   toEvents: Parsed[],
   opts: { propagateDeletes?: boolean } = {},
 ): Action[] {
-  const propagate = opts.propagateDeletes ?? true;
+  const propagate = opts.propagateDeletes === true;
   const originals = new Map(fromEvents.filter((e) => !e.source).map((e) => [e.uid, e]));
   const mirrors = new Map(toEvents.filter((e) => e.source?.side === from.id).map((e) => [e.source!.uid, e]));
   const put = (on: string, ev: { href: string; etag: string | null }, ics: string[], why: string): Put => ({
@@ -180,7 +180,7 @@ export function planDirection(
     }
   }
   for (const [uid, mirror] of mirrors) {
-    if (!originals.has(uid))
+    if (propagate && !originals.has(uid))
       actions.push({
         kind: "delete-if-orphan",
         on: to.id,

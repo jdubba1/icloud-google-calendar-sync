@@ -2,6 +2,8 @@
 // an app-specific password; Google's CalDAV v2 uses Bearer. Responses are
 // fixed shapes, picked apart with regexes (no DOM parser in most runtimes).
 
+import { uidOf, unfold } from "./ics.js";
+
 export type CalDavAuth =
   { kind: "basic"; user: string; pass: string } | { kind: "bearer"; token: () => Promise<string> };
 export type CalDavEvent = { href: string; etag: string | null; ics: string };
@@ -132,7 +134,7 @@ const stamp = (d: Date) => d.toISOString().replace(/[-:]|\.\d{3}/g, "");
 export const listEvents = (auth: CalDavAuth, calendar: string, range: { start: Date; end: Date }) =>
   query(auth, calendar, `<c:time-range start="${stamp(range.start)}" end="${stamp(range.end)}"/>`);
 
-/** One event by UID, regardless of time range. */
+/** One event by exact UID, regardless of time range. */
 export const findByUid = async (auth: CalDavAuth, calendar: string, uid: string) =>
   (
     await query(
@@ -140,7 +142,7 @@ export const findByUid = async (auth: CalDavAuth, calendar: string, uid: string)
       calendar,
       `<c:prop-filter name="UID"><c:text-match collation="i;octet">${escapeXml(uid)}</c:text-match></c:prop-filter>`,
     )
-  )[0] ?? null;
+  ).find((event) => uidOf(unfold(event.ics)) === uid) ?? null;
 
 export function parseEvents(multistatus: string, base: string): CalDavEvent[] {
   return responses(multistatus).flatMap((r) => {

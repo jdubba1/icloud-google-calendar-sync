@@ -1,7 +1,7 @@
 # icloud-google-calendar-sync
 
-Two-way iCloud and Google Calendar sync for humans and agents.
-Let agents manage Google Calendar while you use Apple Calendar.
+Two-way iCloud and Google Calendar sync. Creates and edits sync both ways;
+automatic deletion is off by default.
 
 ## Why
 
@@ -23,18 +23,18 @@ copy of the original's VCALENDAR with three changes:
 - two markers are added inside the event: `X-SYNC-SOURCE:<side>:<uid>` and
   `X-SYNC-FP:<fingerprint of the original when copied>`
 
-That's it. No database, no mapping table, nothing to migrate.
+No database or mapping table is required.
 Each run lists both calendars over CalDAV for a time window and decides, per
 original:
 
-| situation                          | action                                            |
-| ---------------------------------- | ------------------------------------------------- |
-| no mirror yet                      | create one                                        |
-| original changed, mirror untouched | refresh the mirror                                |
-| mirror edited by a human           | push the edit back to the original                |
-| both changed                       | later `LAST-MODIFIED` wins                        |
-| mirror's original is gone          | delete the mirror, after a UID lookup confirms it |
-| original's mirror is gone          | delete the original, same confirmation            |
+| situation                          | action                             |
+| ---------------------------------- | ---------------------------------- |
+| no mirror yet                      | create one                         |
+| original changed, mirror untouched | refresh the mirror                 |
+| mirror edited by a human           | push the edit back to the original |
+| both changed                       | later `LAST-MODIFIED` wins         |
+| mirror's original is gone          | keep the mirror                    |
+| original's mirror is gone          | recreate the mirror                |
 
 "Changed" is a fingerprint of what a human would notice (title, times, location,
 notes, recurrence), normalized so that a server rewriting `DTSTAMP`, `SEQUENCE`,
@@ -42,12 +42,20 @@ notes, recurrence), normalized so that a server rewriting `DTSTAMP`, `SEQUENCE`,
 does not count as an edit. Times are compared as instants, so
 `DTSTART;TZID=America/Chicago:…` and the same moment in UTC are equal.
 
-Deletes propagate both ways. When a mirror is created, the original is stamped
-`X-SYNC-MIRRORED:<side>`. An original that carries the stamp but has no mirror
-any more was deleted by a human on the mirror side, so the original is deleted
-too, after a UID lookup confirms the mirror is really gone. Set
-`"propagateDeletes": false` on a pair if you'd rather a deleted mirror came
-back instead.
+**Automatic deletion is off by default.** Creates and edits still sync both ways.
+Deleting an original leaves its mirror intact; deleting a mirror recreates it
+on the next run while the original exists. To remove an event completely,
+pause your scheduler, remove both copies, then resume it.
+
+Set `"propagateDeletes": true` on a pair to opt into deletions in both directions.
+In this mode, originals are stamped `X-SYNC-MIRRORED:<side>` after mirror creation.
+A missing mirror deletes its stamped original; a missing original deletes its
+mirror. Both require an exact UID lookup across all dates to confirm absence.
+Omitting the option or setting `"propagateDeletes": false` disables both kinds
+of deletion, including for events stamped by an earlier version.
+
+**Upgrading from 0.2.x:** deletion is no longer automatic. Keep the option unset
+for the new behavior, or explicitly set it to `true` to retain deletion propagation.
 
 ## Setup
 
@@ -111,8 +119,9 @@ takes precedence.
 
 A failed sync action stops that pair for the current run. Remaining actions
 are reported as skipped and retried from fresh calendar state on the next run.
-The exception is the `X-SYNC-MIRRORED` stamp: some originals cannot be written
-at all (events Google generates from Gmail, invitations you don't organize).
+With deletion propagation enabled, the exception is the `X-SYNC-MIRRORED` stamp:
+some originals reject writes, including Gmail-generated events and invitations
+you don't organize.
 A failed stamp is reported under `warnings`, the run is still `ok`, and the
 pair carries on. That event still mirrors both ways; deleting its mirror just
 brings the mirror back instead of deleting the original.

@@ -11,6 +11,7 @@ vi.mock("../src/caldav.js", async (original) => ({
 
 const pair: Pair = {
   name: "example",
+  propagateDeletes: true,
   a: { id: "google", url: "https://google.example/cal/", auth: { kind: "basic", user: "u", pass: "p" } },
   b: { id: "icloud", url: "https://icloud.example/cal/", auth: { kind: "basic", user: "u", pass: "p" } },
 };
@@ -53,6 +54,61 @@ beforeEach(() => {
 });
 
 describe("sync execution", () => {
+  it("syncs creates and edits in both directions without deletion stamps by default", async () => {
+    const safePair = { ...pair, propagateDeletes: undefined };
+    const src = original(pair.a.url + "example.ics");
+    events.set(src.href, src);
+    const created = await syncPair(safePair, win);
+    expect(created.errors).toEqual([]);
+    expect(created.created).toBe(1);
+    expect(events.get(src.href)!.ics).toBe(src.ics);
+    const href = pair.b.url + mirrorUid(pair.a.id, "example") + ".ics";
+
+    events.set(src.href, { ...src, ics: src.ics.replace("SUMMARY:Example", "SUMMARY:Source edit") });
+    expect((await syncPair(safePair, win)).errors).toEqual([]);
+    expect(events.get(href)!.ics).toContain("SUMMARY:Source edit");
+
+    const mirror = events.get(href)!;
+    events.set(href, { ...mirror, ics: mirror.ics.replace("SUMMARY:Source edit", "SUMMARY:Mirror edit") });
+    expect((await syncPair(safePair, win)).errors).toEqual([]);
+    expect(events.get(src.href)!.ics).toContain("SUMMARY:Mirror edit");
+    expect(events.get(src.href)!.ics).not.toContain("X-SYNC-MIRRORED");
+    const settled = await syncPair(safePair, win);
+    expect(settled.created + settled.updated + settled.deleted).toBe(0);
+    expect(dav.deleteEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, false])(
+    "never deletes with propagateDeletes=%s, including previously stamped events",
+    async (propagateDeletes) => {
+      for (const side of ["a", "b"] as const) {
+        events.clear();
+        const src = original(pair[side].url + "example.ics");
+        events.set(src.href, src);
+        // Simulate upgrading a pair that previously had deletion enabled.
+        await syncPair(pair, win);
+        const other = side === "a" ? "b" : "a";
+        const mirrorHref = pair[other].url + mirrorUid(pair[side].id, "example") + ".ics";
+        events.delete(mirrorHref);
+        const safePair = { ...pair, propagateDeletes };
+        const restored = await syncPair(safePair, win);
+        expect(restored.errors).toEqual([]);
+        expect(restored.created).toBe(1);
+        expect(events.has(src.href)).toBe(true);
+        expect(events.has(mirrorHref)).toBe(true);
+
+        events.delete(src.href);
+        const orphan = events.get(mirrorHref)!.ics;
+        const kept = await syncPair(safePair, win);
+        expect(kept.errors).toEqual([]);
+        expect(kept.created + kept.updated + kept.deleted).toBe(0);
+        expect(events.get(mirrorHref)!.ics).toBe(orphan);
+        expect(dav.deleteEvent).not.toHaveBeenCalled();
+        expect(dav.findByUid).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it.each(["a", "b"] as const)(
     "preserves an original on %s when mirror creation fails, then retries safely",
     async (side) => {

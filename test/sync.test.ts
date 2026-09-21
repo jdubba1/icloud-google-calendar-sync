@@ -56,7 +56,7 @@ function mirrorOf(
 describe("planDirection", () => {
   it("creates a mirror for a new original, with no attendees, and stamps the original", () => {
     const flight = ev("https://g/events/f.ics", ics("f", "Flight", "20260901T000000Z", ["ATTENDEE:mailto:x@y.z"]));
-    const actions = planDirection(google, icloud, [flight], []);
+    const actions = planDirection(google, icloud, [flight], [], { propagateDeletes: true });
     expect(actions.map((a) => [a.kind, a.on])).toEqual([
       ["put", "icloud"],
       ["put", "google"],
@@ -151,7 +151,7 @@ describe("planDirection", () => {
   it("flags a mirror whose original is missing for orphan check, never blind delete", () => {
     const src = ev("https://g/events/f.ics", ics("f", "Flight"));
     const mirror = mirrorOf(src, google);
-    const actions = planDirection(google, icloud, [], [mirror]);
+    const actions = planDirection(google, icloud, [], [mirror], { propagateDeletes: true });
     expect(actions).toHaveLength(1);
     expect(actions[0].kind).toBe("delete-if-orphan");
     if (actions[0].kind === "delete-if-orphan") expect(actions[0].sourceUid).toBe("f");
@@ -166,7 +166,7 @@ describe("planDirection", () => {
 
   it("deletes an original whose mirror a human removed, but only via a confirmed lookup", () => {
     const stamped = ev("https://g/events/f.ics", ics("f", "Flight")); // carries X-SYNC-MIRRORED:icloud
-    const actions = planDirection(google, icloud, [stamped], []);
+    const actions = planDirection(google, icloud, [stamped], [], { propagateDeletes: true });
     expect(actions).toHaveLength(1);
     expect(actions[0].kind).toBe("delete-if-mirror-gone");
     if (actions[0].kind === "delete-if-mirror-gone") {
@@ -178,11 +178,11 @@ describe("planDirection", () => {
   it("stamps a pre-existing original that has a mirror but no stamp (migration)", () => {
     const unstamped = ev("https://g/events/f.ics", ics("f", "Flight", "20260901T000000Z", []));
     const mirror = mirrorOf(unstamped, google);
-    const actions = planDirection(google, icloud, [unstamped], [mirror]);
+    const actions = planDirection(google, icloud, [unstamped], [mirror], { propagateDeletes: true });
     expect(actions.map((a) => [a.kind, a.on, a.why.split(" ")[0]])).toEqual([["put", "google", "stamp"]]);
   });
 
-  it("propagateDeletes: false keeps the old behavior", () => {
+  it("propagateDeletes: false recreates a deleted mirror", () => {
     const stamped = ev("https://g/events/f.ics", ics("f", "Flight"));
     const actions = planDirection(google, icloud, [stamped], [], { propagateDeletes: false });
     expect(actions.map((a) => a.kind)).toEqual(["put"]);
