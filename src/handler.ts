@@ -32,6 +32,18 @@ export function createHandler({ config, secret, authorize }: HandlerOptions): (r
     const url = new URL(req.url);
     const only = url.searchParams.get("pair");
     const dryRun = url.searchParams.get("dry") === "1";
+    if (url.searchParams.get("review") === "1") {
+      if (only || dryRun) return json({ error: "review cannot be combined with pair or dry" }, 400);
+      if (!config.dedupe) return json({ error: "Configure dedupe before running review" }, 400);
+      try {
+        const { reviewDuplicates } = await import("./dedupe.js");
+        const review = await reviewDuplicates(config);
+        const ok = !review.errors.length && !review.unavailable && !review.truncated;
+        return json({ ok, review }, ok ? 200 : 502);
+      } catch {
+        return json({ error: "Duplicate review failed; no calendar writes were attempted" }, 502);
+      }
+    }
 
     let pairs;
     try {
@@ -71,5 +83,8 @@ export function createHandler({ config, secret, authorize }: HandlerOptions): (r
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 function json(body: unknown, status: number): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
+  });
 }

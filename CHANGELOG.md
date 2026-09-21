@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 — 2026-09-21
+
+- Add priority-calendar rules and explicit read-only duplicate review through the CLI and authenticated HTTP handler.
+
+- Add an optional `/jev` module for read-only duplicate suggestions through Vercel AI Gateway or TypeSafe directly. Normal syncing has no AI dependency.
+
 ## 0.3.0 (2026-09-21)
 
 - Automatic deletion now requires explicit `propagateDeletes: true`. The default

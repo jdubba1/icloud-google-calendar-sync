@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const syncPair = vi.fn();
+const reviewDuplicates = vi.fn();
+vi.mock("../src/dedupe.js", () => ({ reviewDuplicates: (...args: unknown[]) => reviewDuplicates(...args) }));
 vi.mock("../src/sync.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/sync.js")>()),
   syncPair: (...args: unknown[]) => syncPair(...args),
@@ -103,5 +105,47 @@ describe("custom authorization", () => {
 
   it("requires an authentication method", () => {
     expect(() => createHandler({ config })).toThrow(/secret or authorize/);
+  });
+});
+
+describe("duplicate review endpoint", () => {
+  const cfg = {
+    ...config,
+    dedupe: {
+      provider: "gateway" as const,
+      apiKey: "test-key",
+      maxComparisons: 100,
+      rules: [{ prefer: "shared", over: ["personal"], mode: "review" as const }],
+    },
+  };
+  const handler = createHandler({ config: cfg, secret: "shh" });
+  it("requires authentication before review", async () => {
+    reviewDuplicates.mockReset();
+    expect((await handler(new Request("http://h/?review=1"))).status).toBe(401);
+    expect(reviewDuplicates).not.toHaveBeenCalled();
+  });
+  it("reviews without invoking sync, with no-store response headers", async () => {
+    reviewDuplicates.mockResolvedValue({ errors: [], unavailable: 0, truncated: false, suggestions: [] });
+    const response = await handler(new Request("http://h/?review=1", { headers: { "x-api-key": "shh" } }));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(syncPair).not.toHaveBeenCalled();
+  });
+  it("rejects missing configuration and conflicting flags", async () => {
+    expect((await get("/?review=1", { "x-api-key": "shh" })).status).toBe(400);
+    expect(
+      (await handler(new Request("http://h/?review=1&pair=personal", { headers: { "x-api-key": "shh" } }))).status,
+    ).toBe(400);
+    expect(syncPair).not.toHaveBeenCalled();
+  });
+  it("marks partial review as failure without leaking thrown errors", async () => {
+    reviewDuplicates.mockResolvedValueOnce({ errors: [], unavailable: 1, truncated: false });
+    const request = () => new Request("http://h/?review=1", { headers: { "x-api-key": "shh" } });
+    expect((await handler(request())).status).toBe(502);
+    reviewDuplicates.mockRejectedValueOnce(new Error("test-key"));
+    const result = await handler(request());
+    expect(result.status).toBe(502);
+    expect(await result.text()).not.toContain("test-key");
+    expect(syncPair).not.toHaveBeenCalled();
   });
 });

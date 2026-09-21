@@ -45,3 +45,12 @@ describe("findByUid", () => {
     await expect(findByUid(auth, calendar, "wanted")).rejects.toThrow("503");
   });
 });
+
+it("requests expanded occurrences only for review", async () => {
+  const fetch = vi.fn().mockResolvedValue(new Response('<d:multistatus xmlns:d="DAV:"/>', { status: 207 }));
+  vi.stubGlobal("fetch", fetch);
+  const { listOccurrences } = await import("../src/caldav.js");
+  await listOccurrences(auth, calendar, { start: new Date("2026-09-01Z"), end: new Date("2026-10-01Z") });
+  expect(fetch.mock.calls[0][1].method).toBe("REPORT");
+  expect(fetch.mock.calls[0][1].body).toContain('<c:expand start="20260901T000000Z" end="20261001T000000Z"/>');
+});

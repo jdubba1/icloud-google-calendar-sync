@@ -139,8 +139,16 @@ async function main(): Promise<void> {
   if (cmd === "discover" && sub === "icloud") return discoverIcloud(readConfig());
   if (cmd === "discover" && sub === "google") return discoverGoogle(readConfig());
   if (cmd === "sync") return sync(readConfig());
+  if (cmd === "review") {
+    if (has("--pair")) throw new Error("review uses dedupe rules; --pair is only supported by sync");
+    const { reviewDuplicates } = await import("./dedupe.js");
+    const report = await reviewDuplicates(readConfig());
+    console.log(JSON.stringify(report, null, 2));
+    if (report.errors.length || report.unavailable || report.truncated) process.exitCode = 1;
+    return;
+  }
   console.log(
-    "usage: icloud-google-calendar-sync <auth google | discover icloud | discover google | sync [--dry] [--pair NAME]> [--config path]",
+    "usage: icloud-google-calendar-sync <auth google | discover icloud | discover google | review | sync [--dry] [--pair NAME]> [--config path]",
   );
   process.exitCode = 2;
 }

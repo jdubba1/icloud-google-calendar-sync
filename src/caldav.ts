@@ -123,8 +123,8 @@ export async function listCalendars(auth: CalDavAuth, home: string): Promise<Cal
 
 // --- events ------------------------------------------------------------------
 
-async function query(auth: CalDavAuth, calendar: string, filter: string): Promise<CalDavEvent[]> {
-  const body = `<c:calendar-query ${NS}><d:prop><d:getetag/><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">${filter}</c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`;
+async function query(auth: CalDavAuth, calendar: string, filter: string, expand = ""): Promise<CalDavEvent[]> {
+  const body = `<c:calendar-query ${NS}><d:prop><d:getetag/>${expand ? `<c:calendar-data>${expand}</c:calendar-data>` : "<c:calendar-data/>"}</d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">${filter}</c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`;
   return parseEvents((await dav(auth, "REPORT", calendar, { headers: { Depth: "1", ...XML }, body })).text, calendar);
 }
 
@@ -133,6 +133,15 @@ const stamp = (d: Date) => d.toISOString().replace(/[-:]|\.\d{3}/g, "");
 /** Every VEVENT resource overlapping [start, end). */
 export const listEvents = (auth: CalDavAuth, calendar: string, range: { start: Date; end: Date }) =>
   query(auth, calendar, `<c:time-range start="${stamp(range.start)}" end="${stamp(range.end)}"/>`);
+
+/** Read-only expanded occurrences for duplicate review, never for mirror writes. */
+export const listOccurrences = (auth: CalDavAuth, calendar: string, range: { start: Date; end: Date }) =>
+  query(
+    auth,
+    calendar,
+    `<c:time-range start="${stamp(range.start)}" end="${stamp(range.end)}"/>`,
+    `<c:expand start="${stamp(range.start)}" end="${stamp(range.end)}"/>`,
+  );
 
 /** One event by exact UID, regardless of time range. */
 export const findByUid = async (auth: CalDavAuth, calendar: string, uid: string) =>

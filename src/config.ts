@@ -24,7 +24,15 @@ import type { Pair, Side } from "./sync.js";
 export type PairSpec = { name: string; a: string; b: string; propagateDeletes?: boolean };
 export type WindowDays = { pastDays: number; futureDays: number };
 
+export type DedupeConfig = {
+  provider: "gateway" | "typesafe";
+  apiKey: string;
+  rules: { prefer: string; over: string[]; mode: "review" }[];
+  maxComparisons: number;
+};
+
 export type Config = {
+  dedupe?: DedupeConfig;
   google: GoogleOAuthEnv | null;
   icloud: { username: string; appPassword: string } | null;
   pairs: PairSpec[];
@@ -81,7 +89,14 @@ export function loadConfig(file: Record<string, unknown> | null, env: Env = proc
     pastDays: num(w.pastDays ?? env.CALENDAR_SYNC_PAST_DAYS, 30, 0),
     futureDays: num(w.futureDays ?? env.CALENDAR_SYNC_FUTURE_DAYS, 365, 1),
   };
-  return { google, icloud, pairs, window };
+  const rawDedupe =
+    file && Object.hasOwn(file, "dedupe")
+      ? file.dedupe
+      : env.CALENDAR_DEDUPE
+        ? JSON.parse(env.CALENDAR_DEDUPE)
+        : undefined;
+  const dedupe = parseDedupe(rawDedupe, pairs, env);
+  return { google, icloud, pairs, window, ...(dedupe ? { dedupe } : {}) };
 }
 
 export function authsFor(config: Config): { google: CalDavAuth | null; icloud: CalDavAuth | null } {
@@ -110,4 +125,47 @@ export function resolveSide(spec: string, auths: ReturnType<typeof authsFor>): S
 export function pairsFor(config: Config): Pair[] {
   const auths = authsFor(config);
   return config.pairs.map((p) => ({ ...p, a: resolveSide(p.a, auths), b: resolveSide(p.b, auths) }));
+}
+
+/** Validate priority rules before any calendar reads or model requests. */
+export function parseDedupe(raw: unknown, pairs: PairSpec[], env: Env): DedupeConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("dedupe must be an object");
+  const d = raw as Record<string, unknown>;
+  if (d.provider !== "gateway" && d.provider !== "typesafe")
+    throw new Error("dedupe.provider must be gateway or typesafe");
+  const apiKey = resolveValue(d.apiKey, env);
+  if (!apiKey?.trim()) throw new Error("dedupe.apiKey is missing");
+  const maxComparisons = d.maxComparisons ?? 100;
+  if (
+    typeof maxComparisons !== "number" ||
+    !Number.isInteger(maxComparisons) ||
+    maxComparisons < 1 ||
+    maxComparisons > 1000
+  )
+    throw new Error("dedupe.maxComparisons must be an integer from 1 to 1000");
+  const names = new Set(pairs.map((p) => p.name));
+  if (names.size !== pairs.length) throw new Error("dedupe needs unique pair names");
+  if (!Array.isArray(d.rules) || !d.rules.length) throw new Error("dedupe.rules must be a nonempty array");
+  const losers = new Set<string>();
+  const rules = d.rules.map((raw): DedupeConfig["rules"][number] => {
+    const r = raw as Record<string, unknown> | null;
+    if (!r || typeof r.prefer !== "string" || !names.has(r.prefer))
+      throw new Error("dedupe rule needs a known prefer pair");
+    if (r.mode !== "review") throw new Error("dedupe rule mode must be review");
+    if (
+      !Array.isArray(r.over) ||
+      !r.over.length ||
+      !r.over.every((n) => typeof n === "string" && names.has(n) && n !== r.prefer)
+    )
+      throw new Error("dedupe rule over must name other configured pairs");
+    for (const name of r.over) {
+      if (losers.has(name)) throw new Error("Each over pair must have exactly one priority rule");
+      losers.add(name);
+    }
+    return { prefer: r.prefer, over: r.over as string[], mode: "review" };
+  });
+  // A single winner per group avoids conflicting chains and circular preferences.
+  if (rules.some((r) => losers.has(r.prefer))) throw new Error("A preferred pair cannot also appear in over");
+  return { provider: d.provider, apiKey, rules, maxComparisons };
 }

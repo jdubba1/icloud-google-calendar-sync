@@ -163,3 +163,127 @@ pnpm verify   # typecheck, tests, prettier, build
 ```
 
 MIT.
+
+## Optional Jev duplicate review
+
+Set a priority rule using your existing pair names:
+
+```json
+{
+  "dedupe": {
+    "provider": "gateway",
+    "apiKey": "env:AI_GATEWAY_API_KEY",
+    "rules": [{ "prefer": "shared", "over": ["personal"], "mode": "review" }]
+  }
+}
+```
+
+Add this block to `mirror.config.json`, or set `CALENDAR_DEDUPE` to the same
+inner object as JSON. Direct TypeSafe users choose `"provider": "typesafe"` and
+`"apiKey": "env:TYPESAFE_API_KEY"`. Each lower-priority pair can belong to only one
+rule. Preferred pairs cannot also be lower-priority pairs.
+
+Run a review explicitly:
+
+```sh
+npx icloud-google-calendar-sync review --config mirror.config.json
+```
+
+With `createHandler`, use an authenticated `GET /?review=1`. This is a separate,
+read-only operation; normal sync and dry runs do not call Jev. Review cannot be
+combined with pair selection. There are no automatic moves, merges, deletions,
+or suppressed mirrors. `review` is the only supported mode.
+
+The report lists suggested `keep` and `duplicate` occurrences, with pair names,
+event titles, resource URLs, UIDs, recurrence IDs, and the match probability.
+Calendar priority comes from your rule, not the model. Unrelated personal events
+stay personal. The report contains private event data; store it accordingly.
+
+Review reads originals from both sides of each named pair and ignores marked
+mirrors and cancelled events. It asks CalDAV to expand recurring events within
+the configured sync window. Unexpanded recurrences, floating or unknown-zone
+times, duration-only timed events, and invalid or oversized fields are skipped
+and counted. All-day dates use UTC midnight as a comparison convention; mixed
+all-day/timed matches near a date boundary can be missed. Server expansion
+failures are reported, not treated as an empty calendar.
+
+Only overlapping occurrences are compared. Reviews stop at 100 comparisons
+(configurable with `dedupe.maxComparisons`, up to 1000), or before starting another
+comparison after 20 seconds of model work. An in-flight request can take another
+5 seconds; calendar reads are outside that budget. `truncated`, `skippedEvents`,
+`unavailable`, and `errors` describe incomplete coverage. Read failures, model
+failures, and truncation produce CLI exit code 1 or HTTP 502 while preserving any
+suggestions already collected. Skipped unsupported events are counted separately.
+No cleanup is performed, and reviewed decisions are not persisted.
+
+For library use, import `reviewDuplicates` from
+`icloud-google-calendar-sync/dedupe` and pass the result of `loadConfig`.
+
+### Compare individual events
+
+The separate `icloud-google-calendar-sync/jev` module compares two occurrences
+through Vercel AI Gateway or TypeSafe directly. No extra dependencies are required.
+
+```ts
+import { createJevMatcher } from "icloud-google-calendar-sync/jev";
+
+const matcher = createJevMatcher({
+  provider: "gateway",
+  apiKey: process.env.AI_GATEWAY_API_KEY!,
+});
+// Or: createJevMatcher({ provider: "typesafe", apiKey: process.env.TYPESAFE_API_KEY! });
+const result = await matcher.compare(
+  {
+    title: "Hotel reservation",
+    start: Date.parse("2026-10-10T15:00:00-05:00"),
+    end: Date.parse("2026-10-12T11:00:00-05:00"),
+    location: "Example Hotel",
+  },
+  {
+    title: "Stay at Example Hotel",
+    start: Date.parse("2026-10-10T15:00:00-05:00"),
+    end: Date.parse("2026-10-12T11:00:00-05:00"),
+  },
+);
+
+if (result.status === "classified" && result.suggestedDuplicate) {
+  // Show the pair for review. Keep calendar writes outside this module.
+  console.log("Possible duplicate", result.probabilities.same_event);
+}
+```
+
+Choose the provider explicitly; keys are not auto-detected or tried against other
+services. `gateway` uses [Vercel AI Gateway](https://vercel.com/ai-gateway/models/jev)
+with model `typesafe-ai/jev`. `typesafe` uses the
+[direct TypeSafe API](https://docs.typesafe.ai/introduction/quickstart) with
+`jev-latest`. Gateway's evaluation protocol is experimental. Both transports use
+native `fetch`, with no SDK install required. Future providers can be added to the
+transport map without changing matching logic. Library callers using Vercel OIDC
+can pass a fresh request-scoped token as `apiKey` with `gatewayAuth: "oidc"` to
+`createJevMatcher`. Token retrieval stays in the hosting application.
+
+Calling `compare` sends only the two titles, start/end times, all-day flags, and
+optional locations through the selected provider to Jev. IDs, descriptions, attendees, and other properties are excluded. Titles
+and locations may still contain personal information. Importing the module makes
+no requests; the regular sync never needs this key.
+
+Pass one expanded occurrence at a time, with resolved epoch-millisecond start/end
+values and an exclusive end. Resolve all-day boundaries in the calendar's time
+zone. Recurrence expansion and iCalendar parsing belong to the caller. Empty
+intervals and text fields over 500 characters are rejected. Only overlapping
+intervals are sent, so events with incorrect or shifted times can be missed.
+
+Results are `skipped` (no overlap), `unavailable` (request or response failure),
+or `classified`. Choices are `same_event`, `related`, `different`, and `uncertain`.
+A trip and its hotel can overlap without being duplicates. Suggestions require
+a `same_event` probability of at least 0.95. This is a review threshold, not
+measured calendar-matching accuracy. Provider confidence is returned when present,
+or `null` when absent; it is not required for Gateway results.
+An unavailable or uncertain result should leave normal syncing alone.
+
+Requests time out after 5 seconds and are not retried. `timeoutMs` can be set from
+1 to 60000. Successful results are cached by the compared fields, including edits,
+for the lifetime of the matcher. The default cache holds 500 pairs; set `cacheSize`
+to 0 to disable it, or call `matcher.clearCache()`. Reuse the matcher to reuse its
+cache. No cache survives a process restart, and simultaneous identical requests
+are not coalesced. Keep caller-side scanning bounded when comparing calendars.
