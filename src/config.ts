@@ -27,7 +27,7 @@ export type WindowDays = { pastDays: number; futureDays: number };
 export type DedupeConfig = {
   provider: "gateway" | "typesafe";
   apiKey: string;
-  rules: { prefer: string; over: string[]; mode: "review" }[];
+  rules: { prefer: string; over: string[]; mode: "review" | "delete" }[];
   maxComparisons: number;
   threshold: number;
 };
@@ -156,7 +156,8 @@ export function parseDedupe(raw: unknown, pairs: PairSpec[], env: Env): DedupeCo
     const r = raw as Record<string, unknown> | null;
     if (!r || typeof r.prefer !== "string" || !names.has(r.prefer))
       throw new Error("dedupe rule needs a known prefer pair");
-    if (r.mode !== "review") throw new Error("dedupe rule mode must be review");
+    if (r.mode !== undefined && r.mode !== "review" && r.mode !== "delete")
+      throw new Error("dedupe rule mode must be review or delete");
     if (
       !Array.isArray(r.over) ||
       !r.over.length ||
@@ -167,9 +168,13 @@ export function parseDedupe(raw: unknown, pairs: PairSpec[], env: Env): DedupeCo
       if (losers.has(name)) throw new Error("Each over pair must have exactly one priority rule");
       losers.add(name);
     }
-    return { prefer: r.prefer, over: r.over as string[], mode: "review" };
+    return { prefer: r.prefer, over: r.over as string[], mode: r.mode === "delete" ? "delete" : "review" };
   });
   // A single winner per group avoids conflicting chains and circular preferences.
   if (rules.some((r) => losers.has(r.prefer))) throw new Error("A preferred pair cannot also appear in over");
+  for (const rule of rules) {
+    if (rule.mode === "delete" && pairs.some((p) => [rule.prefer, ...rule.over].includes(p.name) && p.propagateDeletes))
+      throw new Error("Dedupe deletion requires propagateDeletes=false");
+  }
   return { provider: d.provider, apiKey, rules, maxComparisons, threshold };
 }

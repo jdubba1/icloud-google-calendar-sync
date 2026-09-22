@@ -42,7 +42,7 @@ describe("priority config", () => {
     { ...dedupe, apiKey: "env:MISSING" },
     { ...dedupe, rules: [] },
     { ...dedupe, maxComparisons: 0 },
-    { ...dedupe, rules: [{ ...rule, mode: "delete" }] },
+    { ...dedupe, rules: [{ ...rule, mode: "invalid" }] },
     { ...dedupe, rules: [{ ...rule, prefer: "missing" }] },
     { ...dedupe, rules: [{ ...rule, over: ["missing"] }] },
     { ...dedupe, rules: [{ ...rule, over: ["shared"] }] },

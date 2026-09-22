@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const syncPair = vi.fn();
 const reviewDuplicates = vi.fn();
+const consolidateDuplicates = vi.fn();
+vi.mock("../src/consolidate.js", () => ({
+  consolidateDuplicates: (...args: unknown[]) => consolidateDuplicates(...args),
+}));
 vi.mock("../src/dedupe.js", () => ({ reviewDuplicates: (...args: unknown[]) => reviewDuplicates(...args) }));
 vi.mock("../src/sync.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/sync.js")>()),
@@ -148,5 +152,57 @@ describe("duplicate review endpoint", () => {
     expect(result.status).toBe(502);
     expect(await result.text()).not.toContain("test-key");
     expect(syncPair).not.toHaveBeenCalled();
+  });
+});
+
+describe("opt-in consolidation", () => {
+  const deletionConfig = {
+    ...config,
+    dedupe: {
+      provider: "gateway" as const,
+      apiKey: "key",
+      threshold: 0.95,
+      maxComparisons: 100,
+      rules: [{ prefer: "shared", over: ["personal"], mode: "delete" as const }],
+    },
+  };
+  beforeEach(() => {
+    consolidateDuplicates.mockReset().mockResolvedValue({ incomplete: false, results: [] });
+    syncPair.mockResolvedValue({ errors: [] });
+  });
+  it("runs cleanup after a successful full sync and forwards the hook", async () => {
+    const onDelete = vi.fn();
+    const run = createHandler({ config: deletionConfig, secret: "key", onDelete });
+    const response = await run(new Request("https://example.com", { headers: { "x-api-key": "key" } }));
+    expect(response.status).toBe(200);
+    expect(consolidateDuplicates).toHaveBeenCalledWith(deletionConfig, { onDelete });
+    expect((await response.json()).consolidation).toEqual({ incomplete: false, results: [] });
+  });
+  it.each(["?dry=1", "?pair=personal"])("does not consolidate %s", async (query) => {
+    const run = createHandler({ config: deletionConfig, secret: "key" });
+    await run(new Request("https://example.com/" + query, { headers: { "x-api-key": "key" } }));
+    expect(consolidateDuplicates).not.toHaveBeenCalled();
+  });
+  it("does not consolidate after sync errors", async () => {
+    syncPair.mockResolvedValue({ errors: ["failed"] });
+    const run = createHandler({ config: deletionConfig, secret: "key" });
+    expect((await run(new Request("https://example.com", { headers: { "x-api-key": "key" } }))).status).toBe(502);
+    expect(consolidateDuplicates).not.toHaveBeenCalled();
+  });
+  it("rejects overlap and releases the guard after completion", async () => {
+    let finish!: (value: { errors: string[] }) => void;
+    syncPair.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const run = createHandler({ config, secret: "key" });
+    const request = () => new Request("https://example.com", { headers: { "x-api-key": "key" } });
+    const first = run(request());
+    expect((await run(request())).status).toBe(409);
+    finish({ errors: [] });
+    expect((await first).status).toBe(200);
+    expect((await run(request())).status).toBe(200);
   });
 });

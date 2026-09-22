@@ -155,6 +155,15 @@ async function sync(config: Config): Promise<void> {
     for (const w of r.warnings ?? []) console.log(`  WARN ${w}`);
     for (const e of r.errors) console.log(`  ERROR ${e}`);
   }
+  if (!failed && !dryRun && !only && config.dedupe?.rules.some((r) => r.mode === "delete")) {
+    console.error(
+      "WARNING: dedupe deletion enabled. No built-in backups or undo; configure application logging if needed.",
+    );
+    const { consolidateDuplicates } = await import("./consolidate.js");
+    const result = await consolidateDuplicates(config);
+    console.log(JSON.stringify(result));
+    failed = result.incomplete || result.results.some((r) => r.status === "failed");
+  }
   if (failed) process.exitCode = 1;
 }
 

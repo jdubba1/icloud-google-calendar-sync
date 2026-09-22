@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add opt-in priority-based dedupe deletion, structured results, and an awaited
+  `onDelete` hook. No database or recovery store required.
+- Delete mirrors before originals and verify removal; skip unsupported or edited
+  resources. Full sync runs cleanup only for explicit delete rules.
+- Keep review and dry-run paths read-only.
+
 ## 0.4.0 — 2026-09-21
 
 - Add priority-calendar rules and explicit read-only duplicate review through the CLI and authenticated HTTP handler.

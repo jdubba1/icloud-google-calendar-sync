@@ -10,15 +10,23 @@
 import { pairsFor, type Config } from "./config.js";
 import { syncPair, window, type PairResult } from "./sync.js";
 
+import type { DeleteOptions } from "./consolidate.js";
+
 export type HandlerOptions = {
+  onDelete?: DeleteOptions["onDelete"];
   config: Config;
   secret?: string;
   authorize?: (req: Request) => boolean | Response | Promise<boolean | Response>;
 };
 
-export function createHandler({ config, secret, authorize }: HandlerOptions): (req: Request) => Promise<Response> {
+export function createHandler({
+  config,
+  secret,
+  authorize,
+  onDelete,
+}: HandlerOptions): (req: Request) => Promise<Response> {
   if (!secret && !authorize) throw new Error("createHandler: a secret or authorize hook is required");
-  return async (req) => {
+  const handle = async (req: Request): Promise<Response> => {
     if (authorize) {
       const allowed = await authorize(req);
       if (allowed instanceof Response) return allowed;
@@ -72,11 +80,37 @@ export function createHandler({ config, secret, authorize }: HandlerOptions): (r
         });
       }
     }
-    const failed = results.some((r) => r.errors.length);
+    let failed = results.some((r) => r.errors.length);
+    let consolidation;
+    if (!failed && !dryRun && !only && config.dedupe?.rules.some((r) => r.mode === "delete")) {
+      try {
+        const { consolidateDuplicates } = await import("./consolidate.js");
+        consolidation = await consolidateDuplicates(config, { onDelete });
+        failed = consolidation.incomplete || consolidation.results.some((r) => r.status === "failed");
+      } catch {
+        return json({ ok: false, results, error: "Consolidation failed; inspect calendars before retrying" }, 502);
+      }
+    }
     return json(
-      { ok: !failed, dryRun, window: { start: win.start.toISOString(), end: win.end.toISOString() }, results },
+      {
+        ok: !failed,
+        dryRun,
+        window: { start: win.start.toISOString(), end: win.end.toISOString() },
+        results,
+        ...(consolidation ? { consolidation } : {}),
+      },
       failed ? 502 : 200,
     );
+  };
+  let running = false;
+  return async (req) => {
+    if (running) return json({ error: "Calendar run already active" }, 409);
+    running = true;
+    try {
+      return await handle(req);
+    } finally {
+      running = false;
+    }
   };
 }
 

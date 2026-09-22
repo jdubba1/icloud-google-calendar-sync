@@ -167,7 +167,12 @@ export async function reviewDuplicates(
           report.comparisons++;
           const result = await compare(keep, duplicate);
           if (result.status === "unavailable") report.unavailable++;
-          if (result.status === "classified" && result.probability >= dedupe.threshold) {
+          if (
+            result.status === "classified" &&
+            Number.isFinite(result.probability) &&
+            result.probability <= 1 &&
+            result.probability >= dedupe.threshold
+          ) {
             report.suggestions.push({ keep, duplicate, probability: result.probability });
           }
         }
@@ -176,3 +181,5 @@ export async function reviewDuplicates(
   }
   return report;
 }
+
+export { consolidateDuplicates, type DeleteNotice, type DeleteOptions, type DeleteResult } from "./consolidate.js";

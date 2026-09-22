@@ -180,7 +180,7 @@ pnpm verify   # typecheck, tests, prettier, build
 
 MIT.
 
-## Optional Jev duplicate review
+## Optional Jev deduplication
 
 Set a priority rule using your existing pair names:
 
@@ -207,9 +207,9 @@ npx icloud-google-calendar-sync review --config mirror.config.json
 ```
 
 With `createHandler`, use an authenticated `GET /?review=1`. This is a separate,
-read-only operation; normal sync and dry runs do not call Jev. Review cannot be
-combined with pair selection. There are no automatic moves, merges, deletions,
-or suppressed mirrors. `review` is the only supported mode.
+read-only operation. Review cannot be combined with pair selection. Rules default
+to `review`; normal sync only calls Jev when a rule explicitly uses `delete`.
+Dry runs and single-pair syncs never run deduplication.
 
 The report lists suggested `keep` and `duplicate` occurrences, with pair names,
 event titles, resource URLs, UIDs, recurrence IDs, and the match probability.
@@ -231,10 +231,64 @@ comparison after 20 seconds of model work. An in-flight request can take another
 `unavailable`, and `errors` describe incomplete coverage. Read failures, model
 failures, and truncation produce CLI exit code 1 or HTTP 502 while preserving any
 suggestions already collected. Skipped unsupported events are counted separately.
-No cleanup is performed, and reviewed decisions are not persisted.
+The review command never performs cleanup, including with delete rules configured.
+Reviewed decisions are not persisted.
 
 For library use, import `reviewDuplicates` from
 `icloud-google-calendar-sync/dedupe` and pass the result of `loadConfig`.
+
+### Opt-in deletion
+
+Set a rule to `"mode": "delete"` to remove matching originals from lower-priority
+pairs and their linked mirrors after a successful full sync:
+
+```json
+{ "prefer": "shared", "over": ["personal"], "mode": "delete" }
+```
+
+**Deletion has no built-in backups, history, or undo. Add application logging
+before enabling it; save recovery copies if you need restoration.** The preferred
+event is unchanged. This removes duplicates; it does not combine event fields.
+
+Both involved pairs must have `propagateDeletes` disabled. Cleanup checks fresh
+resource contents and strong ETags, skips independently edited mirrors, and uses
+conditional deletion. Recurrences, cancellations, and invitations (including
+Gmail reservations with organizer fields) are not eligible. Incomplete reviews
+never start cleanup. Review-only rules never authorize deletion.
+
+The mirror is deleted first, then the original, with exact resource lookups to
+verify removal. If interrupted after the mirror disappears, the original remains.
+The next normal sync may recreate its mirror before another fresh review retries
+cleanup. No completed decision is cached. This is not a transaction across two
+providers: failures may leave one copy, and a later review can reach a different
+decision. Results report confirmed `deletedCopies`, `status`, and a safe `reason`.
+Unknown outcomes require a fresh calendar read.
+
+**Serialize all writers to these calendars**, including CLI runs and other app
+instances. The handler rejects overlapping requests to that handler instance;
+it cannot coordinate across processes or serverless instances. Use your scheduler
+or host's locking mechanism there. No storage adapter or database is bundled.
+
+Library calls can use an awaited hook for logs or backups:
+
+```ts
+import { consolidateDuplicates } from "icloud-google-calendar-sync/dedupe";
+
+const result = await consolidateDuplicates(config, {
+  async onDelete(notice) {
+    // phase: "before" or "completed". Contains private event and recovery data.
+    await saveAuditRecord(notice); // Your application's implementation.
+  },
+});
+```
+
+The `before` hook runs before any delete and receives the original and mirror ICS
+copies, URLs, ETags, and match probability. Throwing aborts that cleanup. Event
+contents are rechecked after the hook. A failed `completed` hook is reported without
+mislabeling a verified deletion as undone. Use the same `onDelete` option on
+`createHandler`. The CLI prints structured results but does not persist backups.
+`syncPair` remains a model-free mirror primitive; use the full CLI/handler sync or
+call `consolidateDuplicates` separately under the same writer lock.
 
 ### Compare individual events
 
@@ -300,8 +354,8 @@ Suggestions require a probability at least equal to `dedupe.threshold` (default
 to `createJevMatcher`. It must be a finite number from 0 to 1, inclusive. Lower
 values surface more candidates; higher values require stronger matches. The
 review runner uses the config threshold even when given a custom matcher.
-This is a review threshold,
-not measured calendar-matching accuracy. Results never authorize calendar changes.
+The threshold is not measured calendar-matching accuracy. A classification alone
+does not authorize changes; deletion requires an explicit priority rule in delete mode.
 An unavailable or low-probability result leaves normal syncing alone.
 
 The matcher result replaces the earlier four-way `choice`, `probabilities`, and
