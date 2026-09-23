@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-09-23
 
 - Only send overlapping pairs to Jev when they share a title word or start time.
   Skipped pairs are counted in `unlikelyPairs`.
