@@ -19,6 +19,16 @@ export type JevComparison =
       suggestedDuplicate: boolean;
     };
 
+/**
+ * Optional cache that outlives one matcher, e.g. a database table shared by cron runs.
+ * Keys are SHA-256 hashes of the provider and compared fields; values are probabilities.
+ * Store failures are treated as cache misses.
+ */
+export interface JevStore {
+  get(key: string): Promise<number | undefined> | number | undefined;
+  set(key: string, probability: number): Promise<void> | void;
+}
+
 export interface JevOptions {
   provider: "gateway" | "typesafe";
   /** The API key for the selected provider. Keys are never auto-detected. */
@@ -31,6 +41,7 @@ export interface JevOptions {
   signal?: AbortSignal;
   /** Successful results retained per matcher instance; zero disables caching. */
   cacheSize?: number;
+  store?: JevStore;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -100,6 +111,17 @@ export function createJevMatcher(options: JevOptions) {
     throw new Error("cacheSize must be an integer between 0 and 10000");
   if (!probability(threshold)) throw new Error("threshold must be a finite number from 0 to 1");
   const cache = new Map<string, JevComparison>();
+  const { store } = options;
+  const classified = (p: number): JevComparison => ({
+    status: "classified",
+    probability: p,
+    suggestedDuplicate: p >= threshold,
+  });
+  const remember = (key: string, result: JevComparison) => {
+    if (cacheSize === 0) return;
+    if (cache.size >= cacheSize) cache.delete(cache.keys().next().value!);
+    cache.set(key, structuredClone(result));
+  };
 
   return {
     async compare(a: JevEvent, b: JevEvent): Promise<JevComparison> {
@@ -109,9 +131,25 @@ export function createJevMatcher(options: JevOptions) {
       if (a.start >= b.end || b.start >= a.end) return { status: "skipped", reason: "no_overlap" };
       const [eventA, eventB] = events.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
       const state = { eventA, eventB };
-      const key = createHash("sha256").update(JSON.stringify(state)).digest("hex");
+      const key = createHash("sha256")
+        .update(JSON.stringify({ provider: options.provider, state }))
+        .digest("hex");
       const cached = cache.get(key);
       if (cached) return structuredClone(cached);
+      if (store) {
+        let stored: unknown;
+        try {
+          stored = await store.get(key);
+        } catch {
+          // A broken cache costs a provider call, not a failed review.
+        }
+        options.signal?.throwIfAborted();
+        if (probability(stored)) {
+          const result = classified(stored);
+          remember(key, result);
+          return result;
+        }
+      }
       try {
         const response = await request(provider.url, {
           method: "POST",
@@ -141,14 +179,14 @@ export function createJevMatcher(options: JevOptions) {
         const expectedType = options.provider === "gateway" ? "boolean" : "noul";
         const p = options.provider === "gateway" ? answer.probability : answer.noul;
         if (answer.type !== expectedType || !probability(p)) return { status: "unavailable" };
-        const result: JevComparison = {
-          status: "classified",
-          probability: p,
-          suggestedDuplicate: p >= threshold,
-        };
-        if (cacheSize > 0) {
-          if (cache.size >= cacheSize) cache.delete(cache.keys().next().value!);
-          cache.set(key, structuredClone(result));
+        const result = classified(p);
+        remember(key, result);
+        if (store) {
+          try {
+            await store.set(key, p);
+          } catch {
+            // The result is still valid; the next run pays for it again.
+          }
         }
         return result;
       } catch {

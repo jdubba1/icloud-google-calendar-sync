@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Only send overlapping pairs to Jev when they share a title word or start time.
+  Skipped pairs are counted in `unlikelyPairs`.
+- Add an optional Jev `store` so scheduled reviews reuse results across runs.
 - Add awaited `beforeAction` and `onAction` hooks for sync and individual dedupe
   deletions, with deterministic write IDs and grouped consolidation IDs.
 - Preserve completed, skipped, failed, and uncertain outcomes. Observer failures

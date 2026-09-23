@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { reviewDuplicates, reviewEvents } from "../src/dedupe.js";
-import type { JevComparison } from "../src/jev.js";
+import { plausibleDuplicate, reviewDuplicates, reviewEvents } from "../src/dedupe.js";
+import type { JevComparison, JevEvent } from "../src/jev.js";
 import type { CalDavEvent } from "../src/caldav.js";
 
 const range = { start: new Date("2026-09-01Z"), end: new Date("2026-10-01Z") };
@@ -156,6 +156,48 @@ describe("review runner", () => {
       compare: async () => ({ status: "classified", probability: 0.8, suggestedDuplicate: threshold === 0.9 }),
     });
     expect(report.suggestions).toHaveLength(threshold === 0.8 ? 1 : 0);
+  });
+  it("only sends overlapping pairs with a shared title word or the same start to Jev", async () => {
+    const day = (d: number, h = 0) => `202609${String(d).padStart(2, "0")}T${String(h).padStart(2, "0")}0000Z`;
+    const vevent = (uid: string, title: string, start: string, end: string) =>
+      `BEGIN:VEVENT\nUID:${uid}\nSUMMARY:${title}\nDTSTART:${start}\nDTEND:${end}\nEND:VEVENT`;
+    const events: Record<string, string[]> = {
+      "shared/a": [
+        vevent("hotel", "San Antonio – Hyatt Regency", day(23), day(25)),
+        vevent("acl", "ACL Weekend Two", day(26), day(27)),
+        vevent("clean", "House cleaning", day(22, 13), day(22, 15)),
+      ],
+      "personal/a": [
+        vevent("trip", "SF trip", day(24), day(28)),
+        vevent("stay", "Stay at Hyatt", day(23, 15), day(24, 11)),
+        vevent("fest", "ACL Festival Weekend Two", day(26, 17), day(26, 23)),
+        vevent("call", "Standup", day(22, 13), day(22, 14)),
+      ],
+    };
+    const read = vi.fn(async (_auth, url: string) =>
+      (events[url.split("/").slice(-3, -1).join("/")] ?? []).map((e, i) => resource(e, `${url}${i}.ics`)),
+    );
+    const compare = vi.fn(async (_a: JevEvent, _b: JevEvent) => match);
+    const report = await reviewDuplicates(config(), { range, list: read, compare });
+    const titles = compare.mock.calls.map(([a, b]) => `${a.title} / ${b.title}`).sort();
+    expect(titles).toEqual([
+      "ACL Weekend Two / ACL Festival Weekend Two",
+      "House cleaning / Standup",
+      "San Antonio – Hyatt Regency / Stay at Hyatt",
+    ]);
+    expect(report).toMatchObject({ comparisons: 3, unlikelyPairs: 2 });
+  });
+  it.each([
+    ["Flight to Austin", "flight AUS", true],
+    ["Dinner", "Reservation at Uchi", false],
+    ["Trip with the team", "The team offsite", true],
+    ["Lunch and the gym", "The gym and lunch", true],
+    ["Café Olé", "café", true],
+    ["At SF", "In SF", false],
+  ])("matches titles %s and %s: %s", (x, y, expected) => {
+    const base = { start: 0, end: 1 };
+    expect(plausibleDuplicate({ ...base, title: x }, { ...base, start: 1, end: 2, title: y })).toBe(expected);
+    expect(plausibleDuplicate({ ...base, title: x }, { ...base, title: y })).toBe(true);
   });
   it("bounds comparisons and reports truncation", async () => {
     const cfg = config();

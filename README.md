@@ -307,7 +307,11 @@ and counted. All-day dates use UTC midnight as a comparison convention; mixed
 all-day/timed matches near a date boundary can be missed. Server expansion
 failures are reported, not treated as an empty calendar.
 
-Only overlapping occurrences are compared. Reviews stop at 100 comparisons
+Only overlapping occurrences are compared, and only when they share a title word
+(three or more letters or digits, ignoring "and", "the", "for", "with", "from") or
+start at the same instant. Overlap alone would pair a hotel stay with every event
+during it. Other pairs are counted in `unlikelyPairs` and never sent to Jev, so a
+duplicate with an unrelated title and a different start time is missed. Reviews stop at 100 comparisons
 (configurable with `dedupe.maxComparisons`, up to 1000), or before starting another
 comparison after 20 seconds of model work. An in-flight request can take another
 5 seconds; calendar reads are outside that budget. `truncated`, `skippedEvents`,
@@ -315,7 +319,7 @@ comparison after 20 seconds of model work. An in-flight request can take another
 failures, and truncation produce CLI exit code 1 or HTTP 502 while preserving any
 suggestions already collected. Skipped unsupported events are counted separately.
 The review command never performs cleanup, including with delete rules configured.
-Reviewed decisions are not persisted.
+Reviewed decisions are not persisted unless you pass a `store` (see below).
 
 For library use, import `reviewDuplicates` from
 `icloud-google-calendar-sync/dedupe` and pass the result of `loadConfig`.
@@ -448,5 +452,21 @@ Requests time out after 5 seconds and are not retried. `timeoutMs` can be set fr
 1 to 60000. Successful results are cached by the compared fields, including edits,
 for the lifetime of the matcher. The default cache holds 500 pairs; set `cacheSize`
 to 0 to disable it, or call `matcher.clearCache()`. Reuse the matcher to reuse its
-cache. No cache survives a process restart, and simultaneous identical requests
-are not coalesced. Keep caller-side scanning bounded when comparing calendars.
+cache. Simultaneous identical requests are not coalesced.
+
+The in-memory cache ends with the process, so a scheduled review pays for the same
+pairs every run. Pass a `store` to `createJevMatcher` or `reviewDuplicates` to keep
+results between runs:
+
+```ts
+const store = {
+  get: async (key: string) => (await db.get("SELECT p FROM jev_cache WHERE key = ?", key))?.p,
+  set: async (key: string, p: number) => db.run("INSERT OR REPLACE INTO jev_cache (key, p) VALUES (?, ?)", key, p),
+};
+```
+
+Keys are SHA-256 hashes of the provider and the compared fields, so editing either
+event produces a new key. Only probabilities are stored; the current threshold is
+applied on read. Store errors and invalid stored values count as cache misses.
+Unavailable results are never stored. Old keys are never deleted; prune the table
+if it matters. Keep caller-side scanning bounded when comparing calendars.

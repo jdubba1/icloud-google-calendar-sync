@@ -103,6 +103,49 @@ describe("optional Jev matcher", () => {
     }
   });
 
+  it("reuses stored probabilities across matchers and applies the current threshold", async () => {
+    const saved = new Map<string, number>();
+    const store = { get: (k: string) => saved.get(k), set: (k: string, p: number) => void saved.set(k, p) };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => Response.json(answer(0.9)));
+    const first = createJevMatcher({ provider: "typesafe", apiKey: "test", fetch, store });
+    expect(await first.compare(a, b)).toMatchObject({ probability: 0.9, suggestedDuplicate: false });
+    expect([...saved.values()]).toEqual([0.9]);
+    const second = createJevMatcher({ provider: "typesafe", apiKey: "test", fetch, store, threshold: 0.8 });
+    expect(await second.compare(b, a)).toEqual({ status: "classified", probability: 0.9, suggestedDuplicate: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const gateway = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({ answers: { match: { type: "boolean", probability: 0.5 } } }));
+    await createJevMatcher({ provider: "gateway", apiKey: "test", fetch: gateway, store }).compare(a, b);
+    expect(gateway).toHaveBeenCalledTimes(1);
+    expect(saved.size).toBe(2);
+  });
+
+  it("treats store failures and invalid stored values as cache misses", async () => {
+    for (const store of [
+      { get: () => Promise.reject(new Error("db down")), set: () => Promise.reject(new Error("db down")) },
+      { get: () => 7, set: () => {} },
+    ]) {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => Response.json(answer()));
+      const matcher = createJevMatcher({ provider: "typesafe", apiKey: "test", fetch, store });
+      expect(await matcher.compare(a, b)).toMatchObject({ status: "classified", probability: 0.99 });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("does not store unavailable results", async () => {
+    const set = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response("busy", { status: 503 }));
+    const matcher = createJevMatcher({
+      provider: "typesafe",
+      apiKey: "test",
+      fetch,
+      store: { get: () => undefined, set },
+    });
+    expect(await matcher.compare(a, b)).toEqual({ status: "unavailable" });
+    expect(set).not.toHaveBeenCalled();
+  });
+
   it.each([
     {},
     { answers: null },

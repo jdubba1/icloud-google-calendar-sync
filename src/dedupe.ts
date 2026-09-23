@@ -1,7 +1,7 @@
 import { listOccurrences, type CalDavEvent, type RequestOptions } from "./caldav.js";
 import { pairsFor, type Config } from "./config.js";
 import { eventProp, normalizeDateLine, propName, propValue, sourceRef, unfold } from "./ics.js";
-import { createJevMatcher, type JevEvent, type JevComparison } from "./jev.js";
+import { createJevMatcher, type JevEvent, type JevComparison, type JevStore } from "./jev.js";
 import { window, type Window } from "./sync.js";
 
 export type ReviewEvent = JevEvent & {
@@ -14,6 +14,8 @@ export type ReviewEvent = JevEvent & {
 export type DedupeReview = {
   mode: "review";
   comparisons: number;
+  /** Overlapping pairs not sent to Jev: no shared title word and different start times. */
+  unlikelyPairs: number;
   skippedEvents: number;
   unavailable: number;
   truncated: boolean;
@@ -107,6 +109,23 @@ export function reviewEvents(resources: CalDavEvent[], pair: string, side: strin
   return { events, skipped };
 }
 
+const minorWords = new Set(["and", "the", "for", "with", "from"]);
+const titleWords = (title: string) =>
+  new Set(
+    title
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((w) => w.length >= 3 && !minorWords.has(w)),
+  );
+
+/** Cheap local gate. Overlap alone pairs a hotel stay with every event on those days. */
+export function plausibleDuplicate(a: JevEvent, b: JevEvent): boolean {
+  if (a.start === b.start) return true;
+  const words = titleWords(a.title);
+  for (const w of titleWords(b.title)) if (words.has(w)) return true;
+  return false;
+}
+
 /** Explicit read-only review. Never invokes syncPair or any calendar write. */
 export async function reviewDuplicates(
   config: Config,
@@ -114,6 +133,8 @@ export async function reviewDuplicates(
     range?: Window;
     list?: typeof listOccurrences;
     compare?: (a: JevEvent, b: JevEvent) => Promise<JevComparison>;
+    /** Persistent Jev results for the default matcher. Ignored when compare is provided. */
+    store?: JevStore;
   } = {},
 ): Promise<DedupeReview> {
   options.signal?.throwIfAborted();
@@ -123,6 +144,7 @@ export async function reviewDuplicates(
   const report: DedupeReview = {
     mode: "review",
     comparisons: 0,
+    unlikelyPairs: 0,
     skippedEvents: 0,
     unavailable: 0,
     truncated: false,
@@ -151,7 +173,8 @@ export async function reviewDuplicates(
     }
     loaded.set(pair.name, events);
   }
-  const compare = options.compare ?? createJevMatcher({ ...dedupe, signal: options.signal }).compare;
+  const compare =
+    options.compare ?? createJevMatcher({ ...dedupe, signal: options.signal, store: options.store }).compare;
   const deadline = Date.now() + 20000;
   const seen = new Set<string>();
   for (const rule of dedupe.rules) {
@@ -163,6 +186,10 @@ export async function reviewDuplicates(
           const key = JSON.stringify([keep.href, keep.start, duplicate.href, duplicate.start]);
           if (seen.has(key)) continue;
           seen.add(key);
+          if (!plausibleDuplicate(keep, duplicate)) {
+            report.unlikelyPairs++;
+            continue;
+          }
           if (report.comparisons >= dedupe.maxComparisons || Date.now() >= deadline) {
             report.truncated = true;
             return report;
