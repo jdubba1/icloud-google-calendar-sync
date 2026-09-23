@@ -8,11 +8,12 @@
 // Auth: `Authorization: Bearer <secret>` or `x-api-key: <secret>`.
 
 import { pairsFor, type Config } from "./config.js";
-import { syncPair, window, type PairResult } from "./sync.js";
+import { syncPair, window, type PairResult, type SyncOptions } from "./sync.js";
 
+import { ActionObserverError } from "./execution.js";
 import type { DeleteOptions } from "./consolidate.js";
 
-export type HandlerOptions = {
+export type HandlerOptions = Omit<SyncOptions, "dryRun"> & {
   onDelete?: DeleteOptions["onDelete"];
   config: Config;
   secret?: string;
@@ -24,6 +25,10 @@ export function createHandler({
   secret,
   authorize,
   onDelete,
+  signal,
+  allowUrl,
+  beforeAction,
+  onAction,
 }: HandlerOptions): (req: Request) => Promise<Response> {
   if (!secret && !authorize) throw new Error("createHandler: a secret or authorize hook is required");
   const handle = async (req: Request): Promise<Response> => {
@@ -37,6 +42,12 @@ export function createHandler({
       if (auth !== `Bearer ${secret}` && key !== secret) return json({ error: "unauthorized" }, 401);
     }
 
+    const options = {
+      signal: AbortSignal.any([req.signal, ...(signal ? [signal] : [])]),
+      allowUrl,
+      beforeAction,
+      onAction,
+    };
     const url = new URL(req.url);
     const only = url.searchParams.get("pair");
     const dryRun = url.searchParams.get("dry") === "1";
@@ -45,7 +56,7 @@ export function createHandler({
       if (!config.dedupe) return json({ error: "Configure dedupe before running review" }, 400);
       try {
         const { reviewDuplicates } = await import("./dedupe.js");
-        const review = await reviewDuplicates(config);
+        const review = await reviewDuplicates(config, options);
         const ok = !review.errors.length && !review.unavailable && !review.truncated;
         return json({ ok, review }, ok ? 200 : 502);
       } catch {
@@ -55,7 +66,7 @@ export function createHandler({
 
     let pairs;
     try {
-      pairs = pairsFor(config);
+      pairs = pairsFor(config, options);
     } catch (e) {
       return json({ error: message(e) }, 500);
     }
@@ -66,8 +77,13 @@ export function createHandler({
     const results: PairResult[] = [];
     for (const pair of selected) {
       try {
-        results.push(await syncPair(pair, win, { dryRun }));
+        results.push(await syncPair(pair, win, { ...options, dryRun }));
       } catch (e) {
+        if (e instanceof ActionObserverError || options.signal.aborted)
+          return json(
+            { ok: false, results, error: "Sync interrupted; reconcile action outcomes before retrying" },
+            502,
+          );
         results.push({
           pair: pair.name,
           a: 0,
@@ -85,7 +101,7 @@ export function createHandler({
     if (!failed && !dryRun && !only && config.dedupe?.rules.some((r) => r.mode === "delete")) {
       try {
         const { consolidateDuplicates } = await import("./consolidate.js");
-        consolidation = await consolidateDuplicates(config, { onDelete });
+        consolidation = await consolidateDuplicates(config, { ...options, onDelete });
         failed = consolidation.incomplete || consolidation.results.some((r) => r.status === "failed");
       } catch {
         return json({ ok: false, results, error: "Consolidation failed; inspect calendars before retrying" }, 502);

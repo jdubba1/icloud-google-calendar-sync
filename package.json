@@ -20,7 +20,7 @@
   "bugs": "https://github.com/jdubba1/icloud-google-calendar-sync/issues",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.3.0"
   },
   "sideEffects": false,
   "bin": {

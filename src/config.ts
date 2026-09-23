@@ -17,7 +17,7 @@
 // CALENDAR_SYNC_FUTURE_DAYS.
 
 import type { CalDavAuth } from "./caldav.js";
-import { googleCalendarUrl } from "./caldav.js";
+import { googleCalendarUrl, scopedAuth, type RequestOptions } from "./caldav.js";
 import { googleAccessToken, type GoogleOAuthEnv } from "./google.js";
 import type { Pair, Side } from "./sync.js";
 
@@ -103,7 +103,7 @@ export function loadConfig(file: Record<string, unknown> | null, env: Env = proc
 export function authsFor(config: Config): { google: CalDavAuth | null; icloud: CalDavAuth | null } {
   const g = config.google;
   return {
-    google: g ? { kind: "bearer", token: () => googleAccessToken(g) } : null,
+    google: g ? { kind: "bearer", token: (signal) => googleAccessToken(g, fetch, signal) } : null,
     icloud: config.icloud ? { kind: "basic", user: config.icloud.username, pass: config.icloud.appPassword } : null,
   };
 }
@@ -123,8 +123,10 @@ export function resolveSide(spec: string, auths: ReturnType<typeof authsFor>): S
   throw new Error(`unknown calendar side "${kind}" in "${spec}" (use google:<calendarId> or icloud:<collection url>)`);
 }
 
-export function pairsFor(config: Config): Pair[] {
+export function pairsFor(config: Config, options: RequestOptions = {}): Pair[] {
   const auths = authsFor(config);
+  if (auths.google) auths.google = scopedAuth(auths.google, options);
+  if (auths.icloud) auths.icloud = scopedAuth(auths.icloud, options);
   return config.pairs.map((p) => ({ ...p, a: resolveSide(p.a, auths), b: resolveSide(p.b, auths) }));
 }
 

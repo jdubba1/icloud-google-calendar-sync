@@ -67,7 +67,7 @@ describe("createHandler", () => {
     });
     const res = await get("/?dry=1&pair=personal", { authorization: "Bearer shh" });
     expect(res.status).toBe(502);
-    expect(syncPair.mock.calls[0][2]).toEqual({ dryRun: true });
+    expect(syncPair.mock.calls[0][2]).toMatchObject({ dryRun: true, signal: expect.any(AbortSignal) });
     expect((await get("/?pair=nope", { authorization: "Bearer shh" })).status).toBe(400);
   });
 });
@@ -175,7 +175,10 @@ describe("opt-in consolidation", () => {
     const run = createHandler({ config: deletionConfig, secret: "key", onDelete });
     const response = await run(new Request("https://example.com", { headers: { "x-api-key": "key" } }));
     expect(response.status).toBe(200);
-    expect(consolidateDuplicates).toHaveBeenCalledWith(deletionConfig, { onDelete });
+    expect(consolidateDuplicates).toHaveBeenCalledWith(
+      deletionConfig,
+      expect.objectContaining({ onDelete, signal: expect.any(AbortSignal) }),
+    );
     expect((await response.json()).consolidation).toEqual({ incomplete: false, results: [] });
   });
   it.each(["?dry=1", "?pair=personal"])("does not consolidate %s", async (query) => {

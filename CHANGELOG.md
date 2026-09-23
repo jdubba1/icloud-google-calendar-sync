@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Add awaited `beforeAction` and `onAction` hooks for sync and individual dedupe
+  deletions, with deterministic write IDs and grouped consolidation IDs.
+- Preserve completed, skipped, failed, and uncertain outcomes. Observer failures
+  stop execution without relabeling successful calendar writes.
+- Thread cancellation through sync, review, consolidation, Google token refresh,
+  and Jev. HTTP handlers also honor request cancellation.
+- Add optional provider URL policies, checked before sending credentials and
+  when returning discovery destinations. Custom CalDAV remains supported.
+- Revalidate deletion conditions after awaited hooks.
+- Require Node.js 20.3+ for native AbortSignal.any support.
+
 - Add opt-in priority-based dedupe deletion, structured results, and an awaited
   `onDelete` hook. No database or recovery store required.
 - Delete mirrors before originals and verify removal; skip unsupported or edited

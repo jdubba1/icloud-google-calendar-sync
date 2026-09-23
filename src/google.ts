@@ -18,7 +18,12 @@ export function googleEnv(env: NodeJS.ProcessEnv = process.env): GoogleOAuthEnv 
   return { clientId, clientSecret, refreshToken };
 }
 
-export async function googleAccessToken(env: GoogleOAuthEnv, fetchImpl: typeof fetch = fetch): Promise<string> {
+export async function googleAccessToken(
+  env: GoogleOAuthEnv,
+  fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted();
   const credentials = createHash("sha256")
     .update(JSON.stringify([env.clientId, env.clientSecret, env.refreshToken]))
     .digest("hex");
@@ -34,7 +39,7 @@ export async function googleAccessToken(env: GoogleOAuthEnv, fetchImpl: typeof f
     }),
     cache: "no-store",
     redirect: "error",
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]),
   });
   const json = (await res.json()) as {
     access_token?: string;
@@ -42,6 +47,7 @@ export async function googleAccessToken(env: GoogleOAuthEnv, fetchImpl: typeof f
     error?: string;
     error_description?: string;
   };
+  signal?.throwIfAborted();
   if (!res.ok || typeof json.access_token !== "string" || !json.access_token.trim()) {
     throw new Error(`google token refresh failed (HTTP ${res.status})`);
   }

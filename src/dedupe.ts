@@ -1,4 +1,4 @@
-import { listOccurrences, type CalDavEvent } from "./caldav.js";
+import { listOccurrences, type CalDavEvent, type RequestOptions } from "./caldav.js";
 import { pairsFor, type Config } from "./config.js";
 import { eventProp, normalizeDateLine, propName, propValue, sourceRef, unfold } from "./ics.js";
 import { createJevMatcher, type JevEvent, type JevComparison } from "./jev.js";
@@ -110,12 +110,13 @@ export function reviewEvents(resources: CalDavEvent[], pair: string, side: strin
 /** Explicit read-only review. Never invokes syncPair or any calendar write. */
 export async function reviewDuplicates(
   config: Config,
-  options: {
+  options: RequestOptions & {
     range?: Window;
     list?: typeof listOccurrences;
     compare?: (a: JevEvent, b: JevEvent) => Promise<JevComparison>;
   } = {},
 ): Promise<DedupeReview> {
+  options.signal?.throwIfAborted();
   if (!config.dedupe) throw new Error("Configure dedupe before running review");
   const { dedupe } = config;
   const range = options.range ?? window(config.window.pastDays, config.window.futureDays);
@@ -130,9 +131,10 @@ export async function reviewDuplicates(
   };
   const names = new Set(dedupe.rules.flatMap((r) => [r.prefer, ...r.over]));
   const loaded = new Map<string, ReviewEvent[]>();
-  for (const pair of pairsFor(config).filter((p) => names.has(p.name))) {
+  for (const pair of pairsFor(config, options).filter((p) => names.has(p.name))) {
     const events: ReviewEvent[] = [];
     for (const side of [pair.a, pair.b]) {
+      options.signal?.throwIfAborted();
       try {
         const parsed = reviewEvents(
           await (options.list ?? listOccurrences)(side.auth, side.url, range),
@@ -143,12 +145,13 @@ export async function reviewDuplicates(
         events.push(...parsed.events);
         report.skippedEvents += parsed.skipped;
       } catch {
+        options.signal?.throwIfAborted();
         report.errors.push(`Could not read ${pair.name} (${side.id}); review is incomplete`);
       }
     }
     loaded.set(pair.name, events);
   }
-  const compare = options.compare ?? createJevMatcher(dedupe).compare;
+  const compare = options.compare ?? createJevMatcher({ ...dedupe, signal: options.signal }).compare;
   const deadline = Date.now() + 20000;
   const seen = new Set<string>();
   for (const rule of dedupe.rules) {
@@ -165,7 +168,9 @@ export async function reviewDuplicates(
             return report;
           }
           report.comparisons++;
+          options.signal?.throwIfAborted();
           const result = await compare(keep, duplicate);
+          options.signal?.throwIfAborted();
           if (result.status === "unavailable") report.unavailable++;
           if (
             result.status === "classified" &&

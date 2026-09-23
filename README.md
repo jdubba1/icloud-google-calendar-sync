@@ -1,8 +1,8 @@
 # icloud-google-calendar-sync
 
 Two-way iCloud and Google Calendar sync. Creates and edits sync both ways;
-automatic deletion is off by default. Requires Node.js 20+ or a runtime with
-Node-compatible crypto and Buffer support.
+automatic deletion is off by default. Requires Node.js 20.3+ or a runtime with
+Node-compatible crypto, Buffer, and AbortSignal.any support.
 
 [Overview and setup](https://jimbo.sh/icloud-google-calendar-sync) /
 [npm](https://www.npmjs.com/package/icloud-google-calendar-sync)
@@ -133,6 +133,89 @@ you don't organize.
 A failed stamp is reported under `warnings`, the run is still `ok`, and the
 pair carries on. That event still mirrors both ways; deleting its mirror just
 brings the mirror back instead of deleting the original.
+
+## Action hooks and cancellation
+
+Library callers can observe individual writes without parsing console output:
+
+```ts
+import { pairsFor, syncPair, window, type SyncOptions } from "icloud-google-calendar-sync";
+
+const options: SyncOptions = {
+  signal: AbortSignal.timeout(90_000),
+  beforeAction: async (action) => {
+    // Persist intent in your own private log. Throwing prevents this write.
+    await journal.start(action);
+  },
+  onAction: async (action) => {
+    // completed, skipped, failed, or uncertain. Persist the actual status.
+    await journal.finish(action);
+  },
+};
+
+for (const pair of pairsFor(config, options)) {
+  await syncPair(pair, window(30, 365), options);
+}
+```
+
+`config` and `journal` above are supplied by your application; the package does
+not add a datastore. The same options work with `createHandler` and
+`consolidateDuplicates`. HTTP handlers also honor the incoming request's signal.
+`reviewDuplicates` and `createJevMatcher` accept a signal for read-only work.
+
+Hooks are awaited and receive detached copies. Each notice includes a deterministic
+write ID, operation (`create`, `update`, or `delete`), pair, side, resource URL,
+ETag, and available ICS. Internal metadata stamps have `internal: true` so a UI
+can hide them. Consolidation emits one action per physical deletion, grouped by
+`consolidationId`; the existing `onDelete` hook carries that same ID and the Jev
+score. IDs identify intended writes, not globally unique runs: scope your journal
+by customer and run as well.
+
+Dry runs never invoke write hooks. A skipped outcome means a deletion's missing
+counterpart reappeared while its before hook was running. Known client HTTP
+rejections are failed; transport errors, timeouts, and server errors are uncertain
+because a write may already have committed. A completed sync action means its
+provider request succeeded; consolidation also checks that deleted resources are
+absent. Unattempted actions do not receive outcomes.
+
+A hook failure throws `ActionObserverError` and stops further work. Its `phase`
+is `before` or `after`; `action.status` remains `completed` if the calendar write
+succeeded but recording completion failed. Inspect that outcome and reconcile
+with the calendar before retrying. The HTTP handler returns a generic failure;
+retain outcomes in the hooks if you need a durable journal.
+
+Cancellation prevents subsequent operations and aborts in-flight provider calls,
+including Google token refresh and Jev requests. It cannot roll back an accepted
+calendar write. Your own async hooks, injected transports, and custom token or
+comparison functions must cooperate with cancellation too.
+
+**Notices contain private calendar data.** Select only the fields you need for
+logs. They are not intended as a public HTTP response. There is no built-in undo,
+retention policy, distributed lock, or retry queue.
+
+### Restrict credential destinations
+
+Custom CalDAV servers still work by default. Hosted applications can restrict
+credentials to known providers before any token is resolved or sent:
+
+```ts
+import { providerUrlPolicy, scopedAuth } from "icloud-google-calendar-sync";
+
+const icloudAuth = scopedAuth(auth, {
+  allowUrl: providerUrlPolicy("icloud"),
+  signal: AbortSignal.timeout(30_000),
+});
+```
+
+The iCloud policy allows `caldav.icloud.com` and `p<number>-caldav.icloud.com` over
+HTTPS on the default port. The Google policy allows
+`apidata.googleusercontent.com/caldav/v2/`. Discovery destinations are checked as
+well. Attach the appropriate policy to each side's auth for provider-specific
+restrictions, or pass an application policy as `allowUrl` in the run options.
+Run policies intersect with existing auth policies; they cannot weaken them.
+The callback must return `true` to allow a destination and receives a detached
+URL. These checks do not establish calendar ownership: a hosted app must still
+validate selected calendars against the customer's own discovery results.
 
 ## Pairs
 

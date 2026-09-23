@@ -4,8 +4,47 @@
 
 import { uidOf, unfold } from "./ics.js";
 
-export type CalDavAuth =
-  { kind: "basic"; user: string; pass: string } | { kind: "bearer"; token: () => Promise<string> };
+export type RequestOptions = {
+  signal?: AbortSignal;
+  /** Return true to allow a destination. Called before credentials are resolved or sent. */
+  allowUrl?: (url: URL) => boolean;
+};
+export type CalDavAuth = RequestOptions &
+  (
+    { kind: "basic"; user: string; pass: string } | { kind: "bearer"; token: (signal?: AbortSignal) => Promise<string> }
+  );
+
+/** Optional strict policy for hosted iCloud/Google integrations. Custom CalDAV remains supported. */
+export function providerUrlPolicy(provider: "icloud" | "google") {
+  return (url: URL): boolean =>
+    url.protocol === "https:" &&
+    !url.port &&
+    !url.username &&
+    !url.password &&
+    (provider === "google"
+      ? url.hostname === "apidata.googleusercontent.com" && url.pathname.startsWith("/caldav/v2/")
+      : url.hostname === "caldav.icloud.com" || /^p\d+-caldav\.icloud\.com$/.test(url.hostname));
+}
+
+/** Scope credentials to a run without mutating a shared auth object or weakening its policy. */
+export function scopedAuth(auth: CalDavAuth, options: RequestOptions): CalDavAuth {
+  if (!options.signal && !options.allowUrl) return auth;
+  const signals = [auth.signal, options.signal].filter((s): s is AbortSignal => !!s);
+  return {
+    ...auth,
+    signal: signals.length ? AbortSignal.any(signals) : undefined,
+    allowUrl: (url) =>
+      (!auth.allowUrl || auth.allowUrl(new URL(url))) && (!options.allowUrl || options.allowUrl(new URL(url))),
+  };
+}
+
+function checkTarget(auth: CalDavAuth, url: string) {
+  auth.signal?.throwIfAborted();
+  const target = new URL(url);
+  if (target.protocol !== "https:" || target.username || target.password)
+    throw new Error("CalDAV requires HTTPS without URL credentials");
+  if (auth.allowUrl && !auth.allowUrl(new URL(target))) throw new Error("CalDAV destination rejected by URL policy");
+}
 export type CalDavEvent = { href: string; etag: string | null; ics: string };
 export type CalendarInfo = { href: string; name: string; components: string[]; shared: boolean };
 
@@ -29,19 +68,18 @@ export async function dav(
   url: string,
   init: { body?: string; headers?: Record<string, string> } = {},
 ) {
-  const target = new URL(url);
-  if (target.protocol !== "https:" || target.username || target.password)
-    throw new Error("CalDAV requires HTTPS without URL credentials");
+  checkTarget(auth, url);
   const Authorization =
     auth.kind === "basic"
       ? "Basic " + Buffer.from(`${auth.user}:${auth.pass}`).toString("base64")
-      : "Bearer " + (await auth.token());
+      : "Bearer " + (await auth.token(auth.signal));
+  auth.signal?.throwIfAborted();
   const res = await fetch(url, {
     method,
     body: init.body,
     cache: "no-store",
     redirect: "error",
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.any([AbortSignal.timeout(15000), ...(auth.signal ? [auth.signal] : [])]),
     headers: { Authorization, "User-Agent": "icloud-google-calendar-sync", ...init.headers },
   });
   const text = await res.text();
@@ -98,7 +136,9 @@ export async function currentUserPrincipal(auth: CalDavAuth, base: string): Prom
     "href",
   );
   if (!href) throw new Error("no current-user-principal at " + base);
-  return resolveHref(base, href);
+  const resolved = resolveHref(base, href);
+  checkTarget(auth, resolved);
+  return resolved;
 }
 
 export async function calendarHome(auth: CalDavAuth, principal: string): Promise<string> {
@@ -107,7 +147,9 @@ export async function calendarHome(auth: CalDavAuth, principal: string): Promise
     "href",
   );
   if (!href) throw new Error("no calendar-home-set at " + principal);
-  return resolveHref(principal, href);
+  const resolved = resolveHref(principal, href);
+  checkTarget(auth, resolved);
+  return resolved;
 }
 
 export async function listCalendars(auth: CalDavAuth, home: string): Promise<CalendarInfo[]> {
@@ -124,9 +166,11 @@ export async function listCalendars(auth: CalDavAuth, home: string): Promise<Cal
     const components = [...(tag(r, "supported-calendar-component-set") ?? "").matchAll(/name="([A-Z]+)"/g)].map(
       (m) => m[1],
     );
+    const resolved = resolveHref(home, href);
+    checkTarget(auth, resolved);
     return [
       {
-        href: resolveHref(home, href),
+        href: resolved,
         name: xmlText(tag(r, "displayname") ?? ""),
         components,
         shared: /shared/i.test(rt) || tag(r, "shared-url") != null,

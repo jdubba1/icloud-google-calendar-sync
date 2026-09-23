@@ -289,3 +289,54 @@ it("rejects sanitized UID collisions before any writes", async () => {
   await expect(syncPair(pair, win)).rejects.toThrow(/colliding mirror UIDs/);
   expect(dav.putEvent).not.toHaveBeenCalled();
 });
+
+it("logs creation and internal stamps separately; dry-run never invokes write hooks", async () => {
+  const src = original(pair.a.url + "example.ics");
+  events.set(src.href, src);
+  const beforeAction = vi.fn(),
+    onAction = vi.fn();
+  await syncPair(pair, win, { dryRun: true, beforeAction, onAction });
+  expect(beforeAction).not.toHaveBeenCalled();
+  expect(onAction).not.toHaveBeenCalled();
+  await syncPair(pair, win, { beforeAction, onAction });
+  expect(onAction.mock.calls.map(([a]) => [a.operation, a.internal, a.status])).toEqual([
+    ["create", false, "completed"],
+    ["update", true, "completed"],
+  ]);
+});
+it("stops dependent writes after a completion observer fails", async () => {
+  const src = original(pair.a.url + "example.ics");
+  events.set(src.href, src);
+  await expect(
+    syncPair(pair, win, {
+      onAction: () => {
+        throw new Error("db down");
+      },
+    }),
+  ).rejects.toMatchObject({ action: { operation: "create", status: "completed" } });
+  expect(dav.putEvent).toHaveBeenCalledTimes(1);
+  expect(events.get(src.href)?.ics).toBe(src.ics);
+});
+it("cancels a sync before reads", async () => {
+  await expect(syncPair(pair, win, { signal: AbortSignal.abort() })).rejects.toThrow();
+  expect(dav.listEvents).not.toHaveBeenCalled();
+});
+it("skips a deletion if the missing counterpart reappears during its before hook", async () => {
+  const src = original(pair.a.url + "example.ics");
+  events.set(src.href, src);
+  await syncPair(pair, win);
+  const mirrorHref = pair.b.url + mirrorUid(pair.a.id, "example") + ".ics";
+  const mirror = events.get(mirrorHref)!;
+  events.delete(mirrorHref);
+  const onAction = vi.fn();
+  const result = await syncPair(pair, win, {
+    beforeAction: () => {
+      events.set(mirrorHref, mirror);
+    },
+    onAction,
+  });
+  expect(result.deleted).toBe(0);
+  expect(result.skipped).toBe(1);
+  expect(events.has(src.href)).toBe(true);
+  expect(onAction).toHaveBeenCalledWith(expect.objectContaining({ operation: "delete", status: "skipped" }));
+});

@@ -4,10 +4,16 @@ import { loadConfig, pairsFor } from "../src/config.js";
 import { fold, unfold, fingerprint, mirrorUid, toMirror } from "../src/ics.js";
 import { CalDavError, type CalDavEvent } from "../src/caldav.js";
 
-const state = vi.hoisted(() => ({ resources: new Map<string, CalDavEvent>(), deletes: [] as string[], fail: "" }));
+const state = vi.hoisted(() => ({
+  resources: new Map<string, CalDavEvent>(),
+  deletes: [] as string[],
+  fail: "",
+  verifyFail: "",
+}));
 vi.mock("../src/caldav.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/caldav.js")>()),
   dav: vi.fn(async (_auth, _method, href) => {
+    if (state.verifyFail === href && state.deletes.includes(href)) throw new CalDavError(401, "GET", href, "");
     const resource = state.resources.get(href);
     if (!resource) throw new CalDavError(404, "GET", href, "");
     return { status: 200, text: resource.ics, headers: new Headers({ etag: resource.etag! }) };
@@ -65,6 +71,7 @@ beforeEach(() => {
   state.resources.clear();
   state.deletes.length = 0;
   state.fail = "";
+  state.verifyFail = "";
 });
 it("deletes mirror first, verifies removal, keeps winner, and supplies recovery copies", async () => {
   const { cfg, keep, drop, mirror, options } = fixture();
@@ -83,6 +90,7 @@ it("can retry after mirror deletion without a journal", async () => {
   expect(state.resources.has(drop.href)).toBe(true);
   expect(state.resources.has(mirror.href)).toBe(false);
   state.fail = "";
+  state.verifyFail = "";
   expect((await consolidateDuplicates(cfg, options)).results[0]).toMatchObject({ status: "deleted", deletedCopies: 1 });
   expect((await consolidateDuplicates(cfg, options)).results).toEqual([]);
 });
@@ -158,4 +166,86 @@ it("the default rule remains review", () => {
   const cfg = config();
   const { mode: _mode, ...rule } = cfg.dedupe!.rules[0];
   expect(loadConfig({ ...cfg, dedupe: { ...cfg.dedupe, rules: [rule] } }, {}).dedupe!.rules[0].mode).toBe("review");
+});
+
+it("reports each physical delete with one consolidation ID", async () => {
+  const { cfg, mirror, drop, options } = fixture();
+  const onAction = vi.fn();
+  await consolidateDuplicates(cfg, { ...options, onAction });
+  expect(onAction.mock.calls.map(([a]) => [a.href, a.status])).toEqual([
+    [mirror.href, "completed"],
+    [drop.href, "completed"],
+  ]);
+  expect(onAction.mock.calls[0][0].consolidationId).toBe(onAction.mock.calls[1][0].consolidationId);
+});
+it("keeps an interrupted second deletion distinct from the completed mirror deletion", async () => {
+  const { cfg, mirror, drop, options } = fixture();
+  state.fail = drop.href;
+  const onAction = vi.fn();
+  await consolidateDuplicates(cfg, { ...options, onAction });
+  expect(onAction.mock.calls.map(([a]) => [a.href, a.status])).toEqual([
+    [mirror.href, "completed"],
+    [drop.href, "uncertain"],
+  ]);
+});
+it("stops deletion when an observer vetoes or fails after completion", async () => {
+  const { cfg, mirror, drop, options } = fixture();
+  await expect(
+    consolidateDuplicates(cfg, {
+      ...options,
+      beforeAction: () => {
+        throw new Error("veto");
+      },
+    }),
+  ).rejects.toMatchObject({ phase: "before" });
+  expect(state.deletes).toEqual([]);
+  await expect(
+    consolidateDuplicates(cfg, {
+      ...options,
+      onAction: () => {
+        throw new Error("db down");
+      },
+    }),
+  ).rejects.toMatchObject({ action: { status: "completed", href: mirror.href } });
+  expect(state.resources.has(drop.href)).toBe(true);
+});
+it("revalidates the winner after an awaited per-action hook", async () => {
+  const { cfg, keep, options } = fixture();
+  await consolidateDuplicates(cfg, {
+    ...options,
+    beforeAction: () => {
+      state.resources.set(keep.href, { ...keep, etag: '"changed"' });
+    },
+  });
+  expect(state.deletes).toEqual([]);
+});
+it("cancels between mirror and original deletion", async () => {
+  const { cfg, mirror, drop, options } = fixture();
+  const c = new AbortController();
+  await expect(
+    consolidateDuplicates(cfg, { ...options, signal: c.signal, onAction: () => c.abort() }),
+  ).rejects.toThrow();
+  expect(state.deletes).toEqual([mirror.href]);
+  expect(state.resources.has(drop.href)).toBe(true);
+});
+it("does not delete the original if a mirror reappears during its action hook", async () => {
+  const { cfg, mirror, drop, options } = fixture();
+  const result = await consolidateDuplicates(cfg, {
+    ...options,
+    beforeAction: (a) => {
+      if (a.href === drop.href) state.resources.set(mirror.href, mirror);
+    },
+  });
+  expect(state.deletes).toEqual([mirror.href]);
+  expect(state.resources.has(drop.href)).toBe(true);
+  expect(result.results[0].status).toBe("failed");
+});
+it("treats failed verification after a successful DELETE as uncertain, even for HTTP 401", async () => {
+  const { cfg, mirror, drop, options } = fixture();
+  state.verifyFail = mirror.href;
+  const onAction = vi.fn();
+  await consolidateDuplicates(cfg, { ...options, onAction });
+  expect(onAction).toHaveBeenCalledWith(expect.objectContaining({ href: mirror.href, status: "uncertain" }));
+  expect(state.deletes).toEqual([mirror.href]);
+  expect(state.resources.has(drop.href)).toBe(true);
 });

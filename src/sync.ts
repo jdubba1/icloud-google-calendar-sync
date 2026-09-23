@@ -9,7 +9,7 @@
 // Originals are stamped only after mirror creation when deletion is enabled.
 
 import type { CalDavAuth, CalDavEvent } from "./caldav.js";
-import { deleteEvent, findByUid, listEvents, putEvent } from "./caldav.js";
+import { deleteEvent, findByUid, listEvents, putEvent, scopedAuth, type RequestOptions } from "./caldav.js";
 import {
   eventProp,
   fingerprint,
@@ -25,6 +25,10 @@ import {
   withMirrored,
   X_FP,
 } from "./ics.js";
+
+import { actionNotice, performAction, ActionObserverError, type ActionHooks } from "./execution.js";
+
+export type SyncOptions = RequestOptions & ActionHooks & { dryRun?: boolean };
 
 export type Side = { id: string; auth: CalDavAuth; url: string };
 export type Pair = { name: string; a: Side; b: Side; propagateDeletes?: boolean };
@@ -218,11 +222,18 @@ export const window = (pastDays: number, futureDays: number, now = new Date()): 
   end: new Date(now.getTime() + futureDays * 86400_000),
 });
 
-export async function syncPair(pair: Pair, win: Window, opts: { dryRun?: boolean } = {}): Promise<PairResult> {
+export async function syncPair(pair: Pair, win: Window, opts: SyncOptions = {}): Promise<PairResult> {
+  opts.signal?.throwIfAborted();
+  pair = {
+    ...pair,
+    a: { ...pair.a, auth: scopedAuth(pair.a.auth, opts) },
+    b: { ...pair.b, auth: scopedAuth(pair.b.auth, opts) },
+  };
   if (pair.a.id === pair.b.id) throw new Error("Sync sides must have distinct IDs");
   const load = async (s: Side) =>
     (await listEvents(s.auth, s.url, win)).map(parse).filter((e): e is Parsed => e != null);
   const [a, b] = await Promise.all([load(pair.a), load(pair.b)]);
+  opts.signal?.throwIfAborted();
   // Reject ambiguous identities before planning any writes. Keep existing mirror UIDs stable.
   for (const [side, events] of [
     [pair.a, a],
@@ -255,18 +266,42 @@ export async function syncPair(pair: Pair, win: Window, opts: { dryRun?: boolean
 
   const sides = new Map([pair.a, pair.b].map((s) => [s.id, s]));
   for (const [index, act] of actions.entries()) {
+    opts.signal?.throwIfAborted();
     const side = sides.get(act.on)!;
+    const notice = actionNotice({
+      operation: act.kind === "put" ? (act.etag ? "update" : "create") : "delete",
+      pair: pair.name,
+      side: side.id,
+      href: act.href,
+      etag: act.etag,
+      internal: act.kind === "put" && !!act.stamp,
+      ics: act.kind === "put" ? act.ics : [...a, ...b].find((event) => event.href === act.href)?.ics,
+    });
     try {
       if (act.kind === "put") {
-        await putEvent(side.auth, act.href, act.ics, act.etag);
+        await performAction(notice, () => putEvent(side.auth, act.href, act.ics, act.etag), opts);
         act.etag ? result.updated++ : result.created++;
       } else {
         const other = sides.get(act.kind === "delete-if-orphan" ? act.sourceSide : act.mirrorSide)!;
         const uid = act.kind === "delete-if-orphan" ? act.sourceUid : act.mirrorUid;
         if (await findByUid(other.auth, other.url, uid)) result.skipped++;
-        else (await deleteEvent(side.auth, act.href, act.etag), result.deleted++);
+        else {
+          const status = await performAction(
+            notice,
+            async () => {
+              // An awaited hook can let the counterpart reappear. Never delete based on its old absence.
+              if (opts.beforeAction && (await findByUid(other.auth, other.url, uid))) return "skipped";
+              await deleteEvent(side.auth, act.href, act.etag);
+            },
+            opts,
+          );
+          if (status === "skipped") result.skipped++;
+          else result.deleted++;
+        }
       }
     } catch (e) {
+      if (e instanceof ActionObserverError) throw e;
+      opts.signal?.throwIfAborted();
       const msg = `${act.kind} ${act.href}: ${e instanceof Error ? e.message : String(e)}`;
       if (act.kind === "put" && act.stamp) {
         // Some originals cannot be written at all (Google events generated from

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { actionNotice, performAction, ActionObserverError, type ActionHooks } from "./execution.js";
 import { CalDavError, dav, deleteEvent, listEvents, type CalDavEvent } from "./caldav.js";
 import { pairsFor, type Config } from "./config.js";
 import { reviewDuplicates, reviewEvents, type ReviewEvent } from "./dedupe.js";
@@ -5,6 +7,8 @@ import { eventProp, fingerprint, mirrorUid, sourceRef, uidOf, unfold, X_FP } fro
 import type { Side, Window } from "./sync.js";
 
 export type DeleteNotice = {
+  /** Groups the physical deletions and their action callbacks. */
+  consolidationId: string;
   phase: "before" | "completed";
   probability: number;
   keep: ReviewEvent;
@@ -12,10 +16,11 @@ export type DeleteNotice = {
   /** Private recovery data. Persist in the before hook if undo is needed. */
   resources: CalDavEvent[];
 };
-export type DeleteOptions = Parameters<typeof reviewDuplicates>[1] & {
-  /** Awaited before any deletion and after verified completion. Throw before to veto. */
-  onDelete?: (notice: DeleteNotice) => void | Promise<void>;
-};
+export type DeleteOptions = Parameters<typeof reviewDuplicates>[1] &
+  ActionHooks & {
+    /** Awaited before any deletion and after verified completion. Throw before to veto. */
+    onDelete?: (notice: DeleteNotice) => void | Promise<void>;
+  };
 export type DeleteResult = {
   keep: ReviewEvent;
   duplicate: ReviewEvent;
@@ -75,7 +80,8 @@ async function unchanged(side: Side, resource: CalDavEvent) {
 
 /** Fresh review followed by opt-in cleanup. Serialize with ALL other calendar writers. */
 export async function consolidateDuplicates(config: Config, options: DeleteOptions = {}) {
-  const pairs = pairsFor(config);
+  options.signal?.throwIfAborted();
+  const pairs = pairsFor(config, options);
   for (const rule of config.dedupe?.rules ?? []) {
     if (rule.mode !== "delete") continue;
     for (const name of [rule.prefer, ...rule.over]) {
@@ -88,7 +94,11 @@ export async function consolidateDuplicates(config: Config, options: DeleteOptio
   if (review.errors.length || review.unavailable || review.truncated) return { review, results, incomplete: true };
   const seen = new Set<string>();
   for (const suggestion of review.suggestions) {
+    options.signal?.throwIfAborted();
     const { keep, duplicate } = suggestion;
+    const consolidationId = createHash("sha256")
+      .update(JSON.stringify([keep, duplicate]))
+      .digest("hex");
     if (
       !config.dedupe!.rules.some(
         (r) => r.mode === "delete" && r.prefer === keep.pair && r.over.includes(duplicate.pair),
@@ -138,38 +148,71 @@ export async function consolidateDuplicates(config: Config, options: DeleteOptio
       }
       const resources = mirror ? [dropped, mirror] : [dropped];
       // Give callers copies so a logging hook cannot mutate the deletion plan.
-      await options.onDelete?.(structuredClone({ ...suggestion, phase: "before", resources }));
+      await options.onDelete?.(structuredClone({ ...suggestion, consolidationId, phase: "before", resources }));
       await unchanged(ks, kept);
       await unchanged(ds, dropped);
       if (mirror) await unchanged(ms, mirror);
+      const remove = async (side: Side, resource: CalDavEvent, uid: string) => {
+        const notice = actionNotice({
+          operation: "delete",
+          pair: duplicate.pair,
+          side: side.id,
+          href: resource.href,
+          etag: resource.etag,
+          ics: resource.ics,
+          internal: false,
+          consolidationId,
+        });
+        await performAction(
+          notice,
+          async () => {
+            // Awaited hooks may allow concurrent calendar edits. Revalidate after them.
+            await unchanged(ks, kept);
+            await unchanged(side, resource);
+            if (side === ds) {
+              const current = await listEvents(ms.auth, ms.url, range);
+              if (
+                current.some((event) => {
+                  const source = sourceRef(unfold(event.ics));
+                  return source?.side === ds.id && source.uid === duplicate.uid;
+                }) ||
+                (await read(
+                  ms,
+                  ms.url + encodeURIComponent(mirrorUid(ds.id, duplicate.uid)) + ".ics",
+                  mirrorUid(ds.id, duplicate.uid),
+                ))
+              )
+                throw new Error("Mirror appeared during cleanup");
+            }
+            options.signal?.throwIfAborted();
+            await deleteEvent(side.auth, resource.href, resource.etag);
+            try {
+              if (await read(side, resource.href, uid)) throw new Error("Deletion not confirmed");
+            } catch {
+              // DELETE already succeeded: a failing verification GET is not a rejected write.
+              throw new Error("Deletion verification failed; outcome uncertain");
+            }
+          },
+          options,
+        );
+        result.deletedCopies++;
+      };
+      options.signal?.throwIfAborted();
       deleting = true;
       // Mirror first: interruption leaves the original for another fresh review.
       if (mirror) {
-        await deleteEvent(ms.auth, mirror.href, mirror.etag);
-        if (await read(ms, mirror.href, uid)) throw new Error("Mirror deletion not confirmed");
-        result.deletedCopies++;
+        await remove(ms, mirror, uid);
       }
-      // Hooks and other clients must not leave a new mirror behind.
-      const remaining = await listEvents(ms.auth, ms.url, range);
-      if (
-        remaining.some((e) => {
-          const source = sourceRef(unfold(e.ics));
-          return source?.side === ds.id && source.uid === duplicate.uid;
-        }) ||
-        (await read(ms, ms.url + encodeURIComponent(uid) + ".ics", uid))
-      )
-        throw new Error("Mirror appeared during cleanup");
-      await unchanged(ks, kept);
-      await deleteEvent(ds.auth, dropped.href, dropped.etag);
-      if (await read(ds, dropped.href, duplicate.uid)) throw new Error("Original deletion not confirmed");
-      result.deletedCopies++;
+      await remove(ds, dropped, duplicate.uid);
       result.status = "deleted";
       try {
-        await options.onDelete?.(structuredClone({ ...suggestion, phase: "completed", resources }));
+        await options.onDelete?.(structuredClone({ ...suggestion, consolidationId, phase: "completed", resources }));
       } catch {
         result.reason = "Completion hook failed after verified deletion";
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof ActionObserverError) throw error;
+      options.signal?.throwIfAborted();
       result.status = deleting ? "failed" : "skipped";
       result.reason = deleting
         ? "Cleanup interrupted; re-read calendars before retrying"

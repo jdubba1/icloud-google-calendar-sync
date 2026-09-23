@@ -28,6 +28,7 @@ export interface JevOptions {
   /** Minimum duplicate probability for review, from 0 to 1. Defaults to 0.95. */
   threshold?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
   /** Successful results retained per matcher instance; zero disables caching. */
   cacheSize?: number;
   fetch?: typeof globalThis.fetch;
@@ -102,6 +103,7 @@ export function createJevMatcher(options: JevOptions) {
 
   return {
     async compare(a: JevEvent, b: JevEvent): Promise<JevComparison> {
+      options.signal?.throwIfAborted();
       const events = [eventData(a), eventData(b)];
       // Half-open intervals: adjacent reservations are not duplicate candidates.
       if (a.start >= b.end || b.start >= a.end) return { status: "skipped", reason: "no_overlap" };
@@ -114,7 +116,7 @@ export function createJevMatcher(options: JevOptions) {
         const response = await request(provider.url, {
           method: "POST",
           redirect: "error",
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(options.signal ? [options.signal] : [])]),
           headers: {
             ...provider.headers,
             ...(options.provider === "gateway" ? { "ai-gateway-auth-method": options.gatewayAuth ?? "api-key" } : {}),
@@ -134,6 +136,7 @@ export function createJevMatcher(options: JevOptions) {
         });
         if (!response.ok) return { status: "unavailable" };
         const body = object(await response.json());
+        options.signal?.throwIfAborted();
         const answer = object(object(body.answers).match);
         const expectedType = options.provider === "gateway" ? "boolean" : "noul";
         const p = options.provider === "gateway" ? answer.probability : answer.noul;
@@ -149,6 +152,7 @@ export function createJevMatcher(options: JevOptions) {
         }
         return result;
       } catch {
+        options.signal?.throwIfAborted();
         // Provider exceptions can contain credentials or event text. Do not expose them.
         return { status: "unavailable" };
       }
